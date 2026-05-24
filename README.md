@@ -240,6 +240,7 @@ Environment variables:
 | `RECURSO_MAX_DEPTH` | `3` | Maximum recursive thread depth. |
 | `RECURSO_MAX_PARALLEL_THREADS` | `10` | Maximum live Recurso threads in one Recurso run tree. |
 | `RECURSO_BOOTSTRAP_CHILDREN` | auto | Set `1` to force child processes to load this extension by path; set `0` to disable. |
+| `RECURSO_OPENAI_CACHE_LINEAGE` | unset | Experimental. Set `1` to give OpenAI parent and forked Recurso sessions the same hashed `prompt_cache_key` lineage for better fork prompt-cache reuse. |
 | `RECURSO_DEBUG` | unset | If set, mirrors child stderr to the manager stderr. |
 
 ## Data Layout

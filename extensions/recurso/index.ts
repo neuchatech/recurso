@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as crypto from "node:crypto";
 import * as path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
@@ -17,6 +18,7 @@ const TOOL_ABORT = "recurso_abort_thread";
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
 const RECURSO_API_VERSION = "1.0.0";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
+const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const EXTENSION_FILE = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = dirname(dirname(dirname(EXTENSION_FILE)));
 const PI_DEFAULT_SESSION_DIR_VALUES = new Set(["default", "pi", "pi-default", "history"]);
@@ -853,6 +855,10 @@ export default function recurso(pi: ExtensionAPI) {
     manager.shutdown();
   });
 
+  pi.on("before_provider_request", (event, ctx) => {
+    return applyOpenAICacheLineage(event.payload, ctx);
+  });
+
   pi.registerTool({
     name: TOOL_NEW,
     label: "Recurso New Thread",
@@ -1446,4 +1452,60 @@ function toolDetails<T extends Record<string, unknown>>(details: T): T & { recur
     schemaVersion: RECURSO_SNAPSHOT_SCHEMA_VERSION,
     ...details,
   };
+}
+
+function applyOpenAICacheLineage(payload: unknown, ctx: any): unknown {
+  if (!envFlag(RECURSO_OPENAI_CACHE_LINEAGE_ENV)) return undefined;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+
+  const params = payload as Record<string, unknown>;
+  if (typeof params.prompt_cache_key !== "string") return undefined;
+
+  const lineageKey = getPromptCacheLineageKey(ctx?.sessionManager);
+  if (!lineageKey) return undefined;
+
+  return {
+    ...params,
+    prompt_cache_key: lineageKey,
+  };
+}
+
+function getPromptCacheLineageKey(sessionManager: any): string | undefined {
+  const header = sessionManager?.getHeader?.();
+  const ownId = typeof header?.id === "string" ? header.id : sessionManager?.getSessionId?.();
+  const parentSession = typeof header?.parentSession === "string" ? header.parentSession : undefined;
+  const lineageSource = findRootSessionId(parentSession) || ownId;
+  if (typeof lineageSource !== "string" || !lineageSource) return undefined;
+
+  const digest = crypto.createHash("sha256").update(lineageSource).digest("hex").slice(0, 48);
+  return `recurso-${digest}`;
+}
+
+function findRootSessionId(sessionFile: string | undefined, seen = new Set<string>()): string | undefined {
+  if (!sessionFile || seen.has(sessionFile)) return undefined;
+  seen.add(sessionFile);
+
+  try {
+    const header = readSessionHeader(sessionFile);
+    if (!header) return undefined;
+    const parentSession = typeof header.parentSession === "string" ? header.parentSession : undefined;
+    return findRootSessionId(parentSession, seen) || (typeof header.id === "string" ? header.id : undefined);
+  } catch {
+    return undefined;
+  }
+}
+
+function readSessionHeader(sessionFile: string): any | undefined {
+  const raw = fs.readFileSync(sessionFile, "utf8");
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const entry = JSON.parse(line);
+    if (entry?.type === "session") return entry;
+  }
+  return undefined;
+}
+
+function envFlag(name: string): boolean {
+  const value = process.env[name];
+  return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
 }
