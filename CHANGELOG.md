@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.9 - 2026-05-24
+
+Post-tool recovery release.
+
+- Added current-session incomplete turn recovery for Recurso-loaded Pi
+  sessions. If Pi ends immediately after a tool result without a following
+  assistant response, Recurso queues a native follow-up asking the same session
+  to continue from that tool result.
+- This complements the worker recovery added in 1.1.6 and covers root sessions
+  that stop after built-in tools such as `edit`, `bash`, or `read`.
+
 ## 1.1.8 - 2026-05-24
 
 Native dormant routing release.

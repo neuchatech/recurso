@@ -17,7 +17,7 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
-const RECURSO_API_VERSION = "1.1.8";
+const RECURSO_API_VERSION = "1.1.9";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
@@ -1184,6 +1184,10 @@ export default function recurso(pi: ExtensionAPI) {
   const manager = new RecursoManager(pi);
   let dashboardProcess: ChildProcess | null = null;
   let dashboardUrl: string | null = null;
+  let awaitingLocalPostToolResponse = false;
+  let localLastToolResultName = "";
+  let localIncompleteTurnRecoveries = 0;
+  let localRecoveryInFlight = false;
 
   pi.on("session_start", (_event, ctx) => {
     manager.setCwd(ctx.cwd);
@@ -1202,6 +1206,44 @@ export default function recurso(pi: ExtensionAPI) {
 
   pi.on("before_provider_request", (event, ctx) => {
     return applyOpenAICacheLineage(event.payload, ctx);
+  });
+
+  pi.on("tool_execution_end", (event: any) => {
+    if (!autoRecoverIncompleteTurns()) return;
+    awaitingLocalPostToolResponse = true;
+    localLastToolResultName = event?.toolName || localLastToolResultName || "a tool";
+  });
+
+  pi.on("message_end", (event: any) => {
+    if (event?.message?.role === "assistant") {
+      awaitingLocalPostToolResponse = false;
+      localRecoveryInFlight = false;
+      localIncompleteTurnRecoveries = 0;
+    }
+  });
+
+  pi.on("agent_end", async () => {
+    if (!autoRecoverIncompleteTurns()) return;
+    if (!awaitingLocalPostToolResponse) return;
+    if (localRecoveryInFlight) return;
+
+    const maxRecoveries = numberFromEnv(RECURSO_MAX_INCOMPLETE_TURN_RECOVERIES_ENV, 3);
+    if (maxRecoveries <= 0 || localIncompleteTurnRecoveries >= maxRecoveries) return;
+
+    awaitingLocalPostToolResponse = false;
+    localRecoveryInFlight = true;
+    localIncompleteTurnRecoveries += 1;
+
+    const recovery = buildLocalIncompleteTurnRecoveryMessage(
+      localLastToolResultName || "a tool",
+      localIncompleteTurnRecoveries,
+    );
+
+    try {
+      await pi.sendUserMessage(recovery, { deliverAs: "followUp" });
+    } catch {
+      await pi.sendUserMessage(recovery);
+    }
   });
 
   pi.registerTool({
@@ -2266,6 +2308,17 @@ function readMessagesFromSession(sessionFile: string): any[] {
     }
   }
   return messages;
+}
+
+function buildLocalIncompleteTurnRecoveryMessage(toolName: string, attempt: number): string {
+  return [
+    "Recurso runtime recovery:",
+    "",
+    `Your previous turn ended immediately after the ${toolName} tool result without an assistant response.`,
+    "Continue from that tool result now. Do not repeat the tool call unless the result says it failed.",
+    "If the task is complete, provide the concise final response or acknowledgement that should have followed the tool result.",
+    `Recovery attempt: ${attempt}`,
+  ].join("\n");
 }
 
 function errorResult(
