@@ -16,7 +16,7 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
-const RECURSO_API_VERSION = "1.1.3";
+const RECURSO_API_VERSION = "1.1.4";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
@@ -421,7 +421,7 @@ class RecursoManager {
     }
 
     if (params.target === this.managerId || params.target === "root") {
-      this.deliverToLocalAgent(routed);
+      await this.deliverToLocalAgent(routed);
       return { routed: true, note: `Routed ${params.type} message from ${params.from} to this thread.` };
     }
 
@@ -679,7 +679,9 @@ class RecursoManager {
     } else if (event?.type === "tool_execution_start") {
       thread.lastTool = event.toolName;
       if (event.toolName === TOOL_MESSAGE) {
-        await this.routeSupervisedMessage(thread, event.args || {});
+        await this.routeSupervisedMessage(thread, event.args || {}).catch((error) => {
+          thread.lastError = error instanceof Error ? error.message : String(error);
+        });
       }
     } else if (event?.type === "extension_ui_request") {
       if (event.method === "confirm") {
@@ -707,7 +709,7 @@ class RecursoManager {
     if (parsed.type === "done") fromThread.status = "done";
 
     if (parsed.target === "parent" || parsed.target === this.managerId || parsed.target === "root") {
-      this.deliverToLocalAgent(fromThread.lastMessage);
+      await this.deliverToLocalAgent(fromThread.lastMessage);
       return;
     }
 
@@ -726,15 +728,17 @@ class RecursoManager {
     target.updatedAt = Date.now();
   }
 
-  private deliverToLocalAgent(message: RoutedThreadMessage): void {
+  private async deliverToLocalAgent(message: RoutedThreadMessage): Promise<void> {
     const text = formatThreadPrompt(message);
     try {
-      this.pi.sendUserMessage(text, { deliverAs: message.deliverAs });
-    } catch {
+      await this.pi.sendUserMessage(text, { deliverAs: message.deliverAs });
+    } catch (errorWithMode) {
       try {
-        this.pi.sendUserMessage(text);
-      } catch {
-        // The current session may be shutting down. The message remains in the child session.
+        await this.pi.sendUserMessage(text);
+      } catch (error) {
+        const messageText = error instanceof Error ? error.message : String(error);
+        const modeText = errorWithMode instanceof Error ? errorWithMode.message : String(errorWithMode);
+        throw new Error(`${messageText}${modeText && modeText !== messageText ? ` (${modeText})` : ""}`);
       }
     }
   }

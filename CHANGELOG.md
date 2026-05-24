@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.4 - 2026-05-24
+
+Native message delivery reliability release.
+
+- Fixed parent delivery for child `recurso_message_thread` calls by awaiting
+  Pi's async `sendUserMessage` API before treating supervisor routing as done.
+- Delivery failures are now recorded on the child thread snapshot instead of
+  being silently swallowed by an unhandled async rejection.
+
 ## 1.1.3 - 2026-05-24
 
 Orchestration guidance release.
