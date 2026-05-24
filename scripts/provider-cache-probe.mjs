@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,10 +19,13 @@ Options:
   --workdir <dir>         Pi cwd. Default: current directory.
   --label <text>          Stable run label. Default: random per run.
   --settle-ms <n>         Wait after seed/fork requests for async cache construction.
+  --order <name>          Continuation order: fork-first, parent-first, or idle-fork-parent-first.
+                          Default: fork-first.
   --keep                  Keep raw probe JSONL files and print their directory.
 
-The probe creates an isolated session dir, seeds a parent session, runs a fork-first
-continuation, then runs a same-parent continuation. It reports assistant usage.
+The probe creates an isolated session dir, seeds a parent session, runs one forked
+continuation and one same-parent continuation in the requested order, then reports
+assistant usage.
 `);
   process.exit(0);
 }
@@ -39,6 +43,10 @@ const workdir = options.workdir ? path.resolve(options.workdir) : process.cwd();
 const thinking = options.thinking || "high";
 const corpusLines = Number(options.corpusLines || 260);
 const settleMs = Number(options.settleMs || 0);
+const order = options.order || "fork-first";
+if (!["fork-first", "parent-first", "idle-fork-parent-first"].includes(order)) {
+  fail(`Invalid --order ${order}. Expected fork-first, parent-first, or idle-fork-parent-first.`);
+}
 const runLabel = options.label || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 const systemPrompt = `Stable system prompt for Recurso provider cache probe. Provider=${options.provider}; Model=${options.model}; Run=${runLabel}.`;
 
@@ -74,17 +82,34 @@ runPi([...common, seedPrompt], seedOut, workdir);
 const parentSession = latestSession(sessionDir);
 sleep(settleMs);
 
-runPi([...common, "--fork", parentSession, forkPrompt], forkOut, workdir);
-const forkSession = latestSession(sessionDir);
-sleep(settleMs);
+let forkSession;
 
-runPi([...common, "--session", parentSession, parentPrompt], parentOut, workdir);
+if (order === "fork-first") {
+  runPi([...common, "--fork", parentSession, forkPrompt], forkOut, workdir);
+  forkSession = latestSession(sessionDir);
+  sleep(settleMs);
+
+  runPi([...common, "--session", parentSession, parentPrompt], parentOut, workdir);
+} else if (order === "parent-first") {
+  runPi([...common, "--session", parentSession, parentPrompt], parentOut, workdir);
+  sleep(settleMs);
+
+  runPi([...common, "--fork", parentSession, forkPrompt], forkOut, workdir);
+  forkSession = latestSession(sessionDir);
+} else {
+  forkSession = createIdleForkSession(parentSession, sessionDir);
+  runPi([...common, "--session", parentSession, parentPrompt], parentOut, workdir);
+  sleep(settleMs);
+
+  runPi([...common, "--session", forkSession, forkPrompt], forkOut, workdir);
+}
 
 const result = {
   provider: options.provider,
   model: options.model,
   thinking,
   settleMs,
+  order,
   runLabel,
   workdir,
   rawDir: options.keep ? root : undefined,
@@ -122,6 +147,29 @@ function latestSession(dir) {
     .sort();
   if (!files.length) fail(`No session files in ${dir}`);
   return path.join(dir, files[files.length - 1]);
+}
+
+function createIdleForkSession(sourceSessionFile, targetSessionDir) {
+  const raw = fs.readFileSync(sourceSessionFile, "utf8");
+  const lines = raw.trim().split(/\n/).filter(Boolean);
+  if (!lines.length) fail(`Cannot fork empty session ${sourceSessionFile}`);
+
+  const entries = lines.map((line) => JSON.parse(line));
+  if (entries[0]?.type !== "session") fail(`First entry in ${sourceSessionFile} is not a session header`);
+
+  const timestamp = new Date().toISOString();
+  const sessionId = `recurso-probe-${crypto.randomUUID()}`;
+  entries[0] = {
+    ...entries[0],
+    id: sessionId,
+    timestamp,
+    parentSession: sourceSessionFile,
+  };
+
+  const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+  const forkSessionFile = path.join(targetSessionDir, `${fileTimestamp}_${sessionId}.jsonl`);
+  fs.writeFileSync(forkSessionFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+  return forkSessionFile;
 }
 
 function readAssistantResult(file) {

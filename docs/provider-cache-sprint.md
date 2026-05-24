@@ -46,7 +46,7 @@ For each provider/model:
 4. Seed a parent session with a long stable corpus.
 5. Run a same-session continuation and record usage.
 6. Fork the original parent session and record usage.
-7. Repeat with fork-first ordering to avoid confusing parent continuation with cache mutation.
+7. Repeat with fork-first, parent-first, and idle-fork-parent-first ordering to avoid confusing parent continuation with cache mutation.
 8. Save raw JSONL output outside the repo by default; commit only summarized results.
 
 ## Current Local Results
@@ -128,11 +128,35 @@ Control note: the same probe still missed when run from a cwd where the local Re
 
 OpenAI's current docs describe `prompt_cache_key` as a routing hint that is combined with the prompt prefix hash to improve cache hit rates. This matches the observed behavior: preserving the key across forks restored the cache hit without reusing the Pi session id itself.
 
+## Continuation Ordering Results
+
+Run date: 2026-05-24.
+
+The `provider-cache-probe.mjs` script now supports three ordering modes:
+
+- `fork-first`: seed parent, prompt fork, then continue parent.
+- `parent-first`: seed parent, continue parent, then fork and prompt from the updated parent.
+- `idle-fork-parent-first`: seed parent, create an idle fork session from the seed state, continue parent, then wake the already-forked child. This simulates Recurso's normal event-driven shape.
+
+| Provider path | Order | Parent continuation cache | Child/fork cache | Interpretation |
+| --- | --- | ---: | ---: | --- |
+| OpenAI direct + Recurso lineage key | `fork-first` | `12544` | `12544` | Best case works: child and parent both hit when the child's first continuation happens before the parent advances. |
+| OpenAI direct + Recurso lineage key | `parent-first` | `11520` | `0` | Forking from the updated parent after a parent continuation missed on the fork. |
+| OpenAI direct + Recurso lineage key | `idle-fork-parent-first` | `12544` | `0` | The real Recurso shape can still miss: an idle child woken after the parent advances did not reuse the old cache in this run. |
+| OpenAI direct + Recurso lineage key | `idle-fork-parent-first`, `--settle-ms 10000` | `0` | `0` | Longer settling did not fix it; OpenAI cache behavior is not stable enough to promise branch-order reuse yet. |
+| OpenRouter DS4 pinned | `parent-first` | `0` | `11008` | Mixed. The child hit after parent-first, but the parent continuation missed in this run. |
+| OpenRouter DS4 pinned | `idle-fork-parent-first` | `0` | `0` | Mixed. Both missed in the event-driven shape, despite earlier fork-first hits. |
+| Anthropic direct | `parent-first` | `11532` | `11557` | Strong: parent and fork both hit after the parent advanced. |
+| Anthropic direct | `idle-fork-parent-first` | `11532` | `11532` | Strong: the Recurso event-driven shape preserves cache cleanly. |
+| Gemini AI Studio direct | `gemini-3.5-flash`, `fork-first` | `0` | `0` | Newer Flash works through AI Studio, but implicit caching still did not fire in this probe. |
+
+Ordering conclusion: Anthropic is currently the only provider path that looks robust for the exact Recurso wake-up pattern. OpenAI's lineage key fixes one fork-cache case but does not guarantee that an idle child can wake warm after the parent has continued. OpenRouter/DeepSeek remains timing/routing-sensitive. Gemini still needs explicit cached content work.
+
 ## Workstreams
 
 - OpenRouter: verify pinned DS4 behavior, document exact Pi/OpenRouter request characteristics, and identify whether `provider.only`, session id, or OpenRouter conversation identity is the likely cache key.
 - DeepSeek direct: test direct provider with `DEEPSEEK_API_KEY`, compare same-session and fork behavior, document DeepSeek cache docs.
-- OpenAI direct: graduate the experimental Recurso lineage key from opt-in after more trials, and decide whether to upstream a proper Pi `cacheLineageId`.
+- OpenAI direct: keep the experimental Recurso lineage key opt-in, test whether OpenAI can support branch-order cache reuse more reliably, and decide whether to upstream a proper Pi `cacheLineageId`.
 - Gemini direct: test implicit cache and investigate explicit cached content; determine whether Pi provider can attach reusable cached content to forked threads.
 
 ## Connectivity Preflight
@@ -189,8 +213,10 @@ OpenAI prompt caching is prefix based and reports hits as cached tokens. OpenAI 
 
 The Recurso opt-in lineage hook confirms the fix shape: derive a stable root-session lineage key, hash it, and use that for `prompt_cache_key` in parent and forked sessions. Longer term, Pi should probably expose a provider-neutral `cacheLineageId` separate from logical `sessionId`.
 
+Ordering caveat: the lineage hook is not a complete branch-cache guarantee. It restored cache hits in `fork-first`, but `idle-fork-parent-first` missed after the parent continued. The current working theory is that `prompt_cache_key` improves routing/cache affinity but does not preserve multiple branch prefixes as durable named cache entries. OpenAI may need a different continuation primitive, or Recurso should treat this as a best-effort optimization rather than a scheduler guarantee.
+
 `previous_response_id` is worth a separate experiment as a branch-like conversation-state primitive, but it is not documented as cache cloning and may require different storage/privacy assumptions.
 
 ### Gemini Direct
 
-Gemini has implicit prefix caching and explicit named cached content. Pi already maps Gemini `cachedContentTokenCount` to `usage.cacheRead`, so implicit fork hits are measurable with the probe. The current Pi Google and Vertex providers do not create explicit cache resources and do not pass a `cachedContent` resource name into `generateContent`, so explicit cache-friendly forks require provider changes or a Recurso/Pi extension that owns cache creation. Pi does preserve Gemini thought signatures for same provider/model replay, but that is reasoning continuity rather than token-cache preservation.
+Gemini has implicit prefix caching and explicit named cached content. Pi already maps Gemini `cachedContentTokenCount` to `usage.cacheRead`, so implicit fork hits are measurable with the probe. Both `gemini-2.5-flash` and `gemini-3.5-flash` produced zero cache hits in current implicit-cache probes. The current Pi Google and Vertex providers do not create explicit cache resources and do not pass a `cachedContent` resource name into `generateContent`, so explicit cache-friendly forks require provider changes or a Recurso/Pi extension that owns cache creation. Pi does preserve Gemini thought signatures for same provider/model replay, but that is reasoning continuity rather than token-cache preservation.
