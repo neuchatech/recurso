@@ -15,6 +15,8 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
+const RECURSO_API_VERSION = "1.0.0";
+const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const EXTENSION_FILE = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = dirname(dirname(dirname(EXTENSION_FILE)));
 const PI_DEFAULT_SESSION_DIR_VALUES = new Set(["default", "pi", "pi-default", "history"]);
@@ -68,8 +70,11 @@ interface ThreadEntry {
 }
 
 interface ThreadSnapshot {
+  schemaVersion?: number;
   id: string;
   parentId: string;
+  ownerManagerId?: string;
+  direct?: boolean;
   task: string;
   depth: number;
   status: ThreadStatus;
@@ -88,6 +93,18 @@ interface ThreadSnapshot {
   lastAssistantText?: string;
   lastTool?: string;
   lastMessage?: RoutedThreadMessage;
+}
+
+interface RunSnapshot {
+  schemaVersion?: number;
+  managerId?: string;
+  parentId?: string | null;
+  runId?: string;
+  managerPid?: number;
+  depth?: number;
+  packageRoot?: string;
+  updatedAt?: number;
+  threads?: ThreadSnapshot[];
 }
 
 interface RoutedThreadMessage {
@@ -444,6 +461,32 @@ class RecursoManager {
     return Array.from(this.threads.values()).map(snapshotThread);
   }
 
+  listRun(includeDescendants: boolean): ThreadSnapshot[] {
+    const direct = this.list().map((thread) => ({
+      ...thread,
+      ownerManagerId: this.managerId,
+      direct: true,
+    }));
+    if (!includeDescendants || !this.baseCwd) return direct;
+
+    const byId = new Map<string, ThreadSnapshot>();
+    for (const thread of direct) byId.set(thread.id, thread);
+
+    for (const snapshot of this.readRunSnapshots(this.baseCwd)) {
+      const ownerManagerId = snapshot.managerId || "unknown";
+      for (const thread of snapshot.threads || []) {
+        if (!thread?.id || byId.has(thread.id)) continue;
+        byId.set(thread.id, {
+          ...thread,
+          ownerManagerId,
+          direct: ownerManagerId === this.managerId,
+        });
+      }
+    }
+
+    return Array.from(byId.values()).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  }
+
   async abort(threadId: string, action: "abort_turn" | "terminate"): Promise<string> {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error(`Thread ${threadId} was not found in this manager.`);
@@ -740,16 +783,8 @@ class RecursoManager {
     }
 
     try {
-      const dir = this.runsDir(cwd);
-      if (!fs.existsSync(dir)) return count;
-
-      for (const entry of fs.readdirSync(dir)) {
-        if (!entry.endsWith(".json")) continue;
-        const file = path.join(dir, entry);
-        const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
-        if (snapshot?.runId !== this.runId || !Array.isArray(snapshot.threads)) continue;
-
-        for (const thread of snapshot.threads) {
+      for (const snapshot of this.readRunSnapshots(cwd)) {
+        for (const thread of snapshot.threads || []) {
           if (typeof thread?.id !== "string" || seen.has(thread.id)) continue;
           if (!isLiveThreadSnapshot(thread)) continue;
           seen.add(thread.id);
@@ -763,10 +798,31 @@ class RecursoManager {
     return count;
   }
 
+  private readRunSnapshots(cwd: string): RunSnapshot[] {
+    const snapshots: RunSnapshot[] = [];
+    const dir = this.runsDir(cwd);
+    if (!fs.existsSync(dir)) return snapshots;
+
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.endsWith(".json")) continue;
+      try {
+        const file = path.join(dir, entry);
+        const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
+        if (snapshot?.runId !== this.runId || !Array.isArray(snapshot.threads)) continue;
+        snapshots.push(snapshot);
+      } catch {
+        // Registry snapshots are diagnostic; ignore partially written or old files.
+      }
+    }
+
+    return snapshots;
+  }
+
   private writeSnapshot(cwd: string): void {
     try {
       ensureDir(this.runsDir(cwd));
       const snapshot = {
+        schemaVersion: RECURSO_SNAPSHOT_SCHEMA_VERSION,
         managerId: this.managerId,
         parentId: this.parentId || null,
         runId: this.runId,
@@ -825,7 +881,7 @@ export default function recurso(pi: ExtensionAPI) {
         });
         return {
           content: [{ type: "text", text: renderStartedThread(thread, "fresh") }],
-          details: snapshotThread(thread),
+          details: toolDetails(snapshotThread(thread)),
         };
       } catch (error) {
         return errorResult(error);
@@ -881,7 +937,7 @@ export default function recurso(pi: ExtensionAPI) {
         });
         return {
           content: [{ type: "text", text: renderStartedThread(thread, params.fork_from ? `forked from ${params.fork_from}` : "forked from current session") }],
-          details: snapshotThread(thread),
+          details: toolDetails(snapshotThread(thread)),
         };
       } catch (error) {
         return errorResult(error);
@@ -920,7 +976,7 @@ export default function recurso(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: result.note }],
-        details: { routed: result.routed, target: parsed.target, type: parsed.type, deliverAs: parsed.deliverAs },
+        details: toolDetails({ routed: result.routed, target: parsed.target, type: parsed.type, deliverAs: parsed.deliverAs }),
         terminate: isSupervisorTarget(parsed.target) && (parsed.type === "question" || parsed.type === "done"),
       };
     },
@@ -947,7 +1003,7 @@ export default function recurso(pi: ExtensionAPI) {
         const peek = await manager.peek(params.thread_id, mode, maxEntries);
         return {
           content: [{ type: "text", text: peek.text }],
-          details: peek.details,
+          details: toolDetails(peek.details),
         };
       } catch (error) {
         return errorResult(error);
@@ -958,20 +1014,23 @@ export default function recurso(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL_LIST,
     label: "Recurso List Threads",
-    description: "List live Recurso threads owned by this manager process.",
+    description: "List live Recurso threads in this run. Direct threads are owned by this manager; descendants come from run snapshots.",
     promptSnippet: "List Recurso threads",
-    parameters: Type.Object({}),
-    async execute() {
-      const threads = manager.list();
+    parameters: Type.Object({
+      include_descendants: Type.Optional(Type.Boolean({ description: "Include descendant threads discovered from Recurso run snapshots. Default true." })),
+    }),
+    async execute(_toolCallId, params) {
+      const includeDescendants = params.include_descendants !== false;
+      const threads = manager.listRun(includeDescendants);
       if (threads.length === 0) {
         return {
           content: [{ type: "text", text: "No Recurso threads are live in this manager." }],
-          details: { threads: [] },
+          details: toolDetails({ threads: [], includeDescendants }),
         };
       }
       return {
         content: [{ type: "text", text: renderThreadList(threads) }],
-        details: { threads },
+        details: toolDetails({ threads, includeDescendants }),
       };
     },
   });
@@ -990,7 +1049,7 @@ export default function recurso(pi: ExtensionAPI) {
         const text = await manager.abort(params.thread_id, params.action || "abort_turn");
         return {
           content: [{ type: "text", text }],
-          details: { threadId: params.thread_id, action: params.action || "abort_turn" },
+          details: toolDetails({ threadId: params.thread_id, action: params.action || "abort_turn" }),
         };
       } catch (error) {
         return errorResult(error);
@@ -1002,7 +1061,11 @@ export default function recurso(pi: ExtensionAPI) {
     description: "Show live Recurso thread inventory",
     handler: async (_args, ctx) => {
       const threads = manager.list();
-      ctx.ui.notify(threads.length === 0 ? "Recurso: no live threads." : `Recurso: ${threads.length} live thread(s).`, "info");
+      const runThreads = manager.listRun(true);
+      ctx.ui.notify(
+        runThreads.length === 0 ? "Recurso: no live threads." : `Recurso: ${threads.length} direct, ${runThreads.length} in run tree.`,
+        "info",
+      );
     },
   });
 
@@ -1116,6 +1179,7 @@ function applyState(thread: ThreadEntry, state: RpcState): void {
 
 function snapshotThread(thread: ThreadEntry): ThreadSnapshot {
   return {
+    schemaVersion: RECURSO_SNAPSHOT_SCHEMA_VERSION,
     id: thread.id,
     parentId: thread.parentId,
     task: thread.task,
@@ -1216,7 +1280,8 @@ function renderStartedThread(thread: ThreadEntry, source: string): string {
 function renderThreadList(threads: ThreadSnapshot[]): string {
   const lines = [`Recurso threads (${threads.length}):`, ""];
   for (const thread of threads) {
-    lines.push(`- ${thread.id} [${thread.status}] depth ${thread.depth}`);
+    const ownership = thread.direct === false ? `descendant via ${thread.ownerManagerId || "unknown"}` : "direct";
+    lines.push(`- ${thread.id} [${thread.status}] depth ${thread.depth} (${ownership})`);
     lines.push(`  task: ${oneLine(thread.task, 140)}`);
     if (thread.sessionFile) lines.push(`  session: ${thread.sessionFile}`);
     if (thread.lastMessage) {
@@ -1371,6 +1436,14 @@ function errorResult(error: unknown): { content: Array<{ type: "text"; text: str
   const message = error instanceof Error ? error.message : String(error);
   return {
     content: [{ type: "text", text: `Recurso error: ${message}` }],
-    details: { error: message },
+    details: toolDetails({ error: message }),
+  };
+}
+
+function toolDetails<T extends Record<string, unknown>>(details: T): T & { recursoApiVersion: string; schemaVersion: number } {
+  return {
+    recursoApiVersion: RECURSO_API_VERSION,
+    schemaVersion: RECURSO_SNAPSHOT_SCHEMA_VERSION,
+    ...details,
   };
 }

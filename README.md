@@ -39,8 +39,9 @@ local message bus and a way to run more Pi agents.
 
 ## Status
 
-Early public package. The current API is usable for local work and demos, but
-the project should get more hardening before a `1.0.0` tag.
+`v1.0.0` is the first stable public release. The core tool names, message
+contract, default session-history behavior, and snapshot schema are intended to
+remain compatible across `1.x`.
 
 ## Install
 
@@ -215,6 +216,19 @@ The tools do the mechanics. `/skill:recurso` is the general guidance. The
 orchestrator and worker skills are optional role-focused prompts, not separate
 thread capabilities.
 
+## Examples
+
+See [`examples/`](examples/) for copy-pasteable prompts:
+
+- [`code-review-team.md`](examples/code-review-team.md): split code review
+  across focused reviewers, then synthesize the risks.
+- [`research-swarm.md`](examples/research-swarm.md): run independent research
+  questions and reconcile the findings.
+- [`implementation-and-verification.md`](examples/implementation-and-verification.md):
+  keep implementation and verification in separate live threads.
+
+See [`docs/tool-schemas.md`](docs/tool-schemas.md) for the v1 tool contract.
+
 ## Configuration
 
 Environment variables:
@@ -244,23 +258,12 @@ If `RECURSO_SESSION_DIR=isolated`, spawned thread sessions are also stored at:
 .pi/recurso/sessions/
 ```
 
-## Before 1.0
+## Roadmap
 
-The core idea is working. Before tagging `v1.0.0`, the project should earn a
-little more confidence:
-
-- a small automated integration harness for new, fork, message, wake, sibling
-  routing, nested routing, abort, and max-thread limits;
-- sharper guidance so orchestrators naturally avoid `sleep` polling;
-- persisted thread registry recovery, so a manager can reattach to live or
-  recently exited threads after a restart when Pi supports it cleanly;
-- clearer UX for recursive descendants that are not directly owned by the
-  current manager;
-- versioned tool schemas and documented compatibility expectations;
-- a few real-world examples, especially code review, research swarms, and
-  implementation plus verification teams;
-- a security note for tool allowlists and package trust that is prominent
-  enough for public users.
+Recurso v1 is local, process-tree based orchestration. Future releases may add
+reattachment to existing live processes after a parent restart, richer
+visualization for recursive descendants, and more automated scenario tests as
+Pi's RPC surface evolves.
 
 ## Notes
 
@@ -277,23 +280,16 @@ little more confidence:
 Pi packages execute arbitrary code with your user permissions. Recurso starts
 additional Pi processes that can use the tools available to those processes.
 Review the package, your Pi settings, and any loaded extensions before using it
-on sensitive repositories.
+on sensitive repositories. See [`SECURITY.md`](SECURITY.md).
 
 ## Development Checks
 
-From the workspace used during development:
+From a checkout of this package:
 
 ```bash
-npx --yes esbuild recurso/extensions/recurso/index.ts \
-  --bundle --platform=node --format=esm --target=node20 \
-  --external:@earendil-works/pi-ai \
-  --external:@earendil-works/pi-coding-agent \
-  --external:typebox \
-  --outfile=/tmp/recurso-index.mjs
-
-printf '{"id":"state","type":"get_state"}\n{"id":"commands","type":"get_commands"}\n' \
-  | PI_CODING_AGENT_DIR="$PWD/.pi/agent" \
-      pi -e "$PWD/recurso" --no-extensions --offline --mode rpc
-
-npm pack ./recurso --pack-destination /tmp
+npm run check
+npm run check:pi
+npm run check:live
 ```
+
+`check:live` requires a working Pi model/provider configuration.
