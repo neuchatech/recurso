@@ -17,10 +17,12 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
-const RECURSO_API_VERSION = "1.1.5";
+const RECURSO_API_VERSION = "1.1.6";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
+const RECURSO_AUTO_RECOVER_INCOMPLETE_TURNS_ENV = "RECURSO_AUTO_RECOVER_INCOMPLETE_TURNS";
+const RECURSO_MAX_INCOMPLETE_TURN_RECOVERIES_ENV = "RECURSO_MAX_INCOMPLETE_TURN_RECOVERIES";
 const RECURSO_DASHBOARD_DEFAULT_PACKAGE = "github:neuchatech/recurso-dashboard";
 const RECURSO_DASHBOARD_DEFAULT_PORT = 3737;
 const EXTENSION_FILE = fileURLToPath(import.meta.url);
@@ -72,6 +74,11 @@ interface ThreadEntry {
   lastError?: string;
   lastAssistantText?: string;
   lastTool?: string;
+  lastToolResultName?: string;
+  lastToolResultAt?: number;
+  awaitingPostToolResponse?: boolean;
+  incompleteTurnRecoveries?: number;
+  lastIncompleteTurnRecoveryAt?: number;
   lastMessage?: RoutedThreadMessage;
   rpc: RpcProcess;
 }
@@ -99,6 +106,11 @@ interface ThreadSnapshot {
   lastError?: string;
   lastAssistantText?: string;
   lastTool?: string;
+  lastToolResultName?: string;
+  lastToolResultAt?: number;
+  awaitingPostToolResponse?: boolean;
+  incompleteTurnRecoveries?: number;
+  lastIncompleteTurnRecoveryAt?: number;
   lastMessage?: RoutedThreadMessage;
 }
 
@@ -355,6 +367,9 @@ class RecursoManager {
   private readonly depth = numberFromEnv("RECURSO_DEPTH", 0);
   private readonly maxDepth = numberFromEnv("RECURSO_MAX_DEPTH", 3);
   private readonly maxParallelThreads = numberFromEnv("RECURSO_MAX_PARALLEL_THREADS", 10);
+  private readonly maxIncompleteTurnRecoveries = autoRecoverIncompleteTurns()
+    ? numberFromEnv(RECURSO_MAX_INCOMPLETE_TURN_RECOVERIES_ENV, 3)
+    : 0;
   private bootstrapChildren = process.env.RECURSO_BOOTSTRAP_CHILDREN === "1";
 
   constructor(private readonly pi: ExtensionAPI) {}
@@ -699,11 +714,15 @@ class RecursoManager {
       thread.status = "running";
     } else if (event?.type === "agent_end") {
       if (thread.status !== "done" && thread.status !== "waiting") {
-        thread.status = "idle";
+        const recovered = await this.recoverIncompleteTurn(thread);
+        if (!recovered) thread.status = "idle";
       }
     } else if (event?.type === "message_end" && event.message?.role === "assistant") {
       const text = firstText(event.message);
       if (text) thread.lastAssistantText = text;
+      if (thread.awaitingPostToolResponse) {
+        thread.awaitingPostToolResponse = false;
+      }
     } else if (event?.type === "tool_execution_start") {
       thread.lastTool = event.toolName;
       if (event.toolName === TOOL_MESSAGE) {
@@ -712,10 +731,17 @@ class RecursoManager {
         });
       }
     } else if (event?.type === "tool_execution_end") {
+      thread.lastTool = event.toolName || thread.lastTool;
+      thread.lastToolResultName = event.toolName || thread.lastTool;
+      thread.lastToolResultAt = Date.now();
+      thread.awaitingPostToolResponse = true;
       if (event.toolName === TOOL_MESSAGE) {
         await this.routeSupervisedMessage(thread, toolMessageArgsFromEvent(event), event.toolCallId).catch((error) => {
           thread.lastError = error instanceof Error ? error.message : String(error);
         });
+        if (thread.status === "done" || thread.status === "waiting") {
+          thread.awaitingPostToolResponse = false;
+        }
       }
     } else if (event?.type === "extension_ui_request") {
       if (event.method === "confirm") {
@@ -724,6 +750,35 @@ class RecursoManager {
     }
 
     this.writeSnapshot(thread.cwd);
+  }
+
+  private async recoverIncompleteTurn(thread: ThreadEntry): Promise<boolean> {
+    if (!thread.awaitingPostToolResponse) return false;
+    if (isDead(thread)) return false;
+    if (this.maxIncompleteTurnRecoveries <= 0) return false;
+
+    const recoveries = thread.incompleteTurnRecoveries || 0;
+    if (recoveries >= this.maxIncompleteTurnRecoveries) {
+      thread.lastError = `Turn ended after ${thread.lastToolResultName || thread.lastTool || "a tool"} without a post-tool response; recovery limit ${this.maxIncompleteTurnRecoveries} reached.`;
+      return false;
+    }
+
+    thread.incompleteTurnRecoveries = recoveries + 1;
+    thread.lastIncompleteTurnRecoveryAt = Date.now();
+    thread.awaitingPostToolResponse = false;
+    thread.status = "running";
+    thread.updatedAt = Date.now();
+    this.writeSnapshot(thread.cwd);
+
+    try {
+      await thread.rpc.prompt(buildIncompleteTurnRecoveryMessage(thread), "followUp");
+      await this.refreshThreadState(thread).catch(() => undefined);
+      return true;
+    } catch (error) {
+      thread.lastError = error instanceof Error ? error.message : String(error);
+      thread.status = "idle";
+      return false;
+    }
   }
 
   private async routeSupervisedMessage(fromThread: ThreadEntry, args: any, toolCallId?: string): Promise<void> {
@@ -1070,7 +1125,6 @@ export default function recurso(pi: ExtensionAPI) {
           deliverAs: parsed.deliverAs,
           deliver_as: parsed.deliverAs,
         }),
-        terminate: isSupervisorTarget(parsed.target) && (parsed.type === "question" || parsed.type === "done"),
       };
     },
   });
@@ -1485,11 +1539,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isSupervisorTarget(target: string): boolean {
-  const parentId = process.env.RECURSO_PARENT_THREAD_ID;
-  return Boolean(parentId) && (target === "parent" || target === parentId);
-}
-
 function newThreadId(): string {
   return `th-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -1594,8 +1643,29 @@ function snapshotThread(thread: ThreadEntry): ThreadSnapshot {
     lastError: thread.lastError,
     lastAssistantText: thread.lastAssistantText,
     lastTool: thread.lastTool,
+    lastToolResultName: thread.lastToolResultName,
+    lastToolResultAt: thread.lastToolResultAt,
+    awaitingPostToolResponse: thread.awaitingPostToolResponse,
+    incompleteTurnRecoveries: thread.incompleteTurnRecoveries,
+    lastIncompleteTurnRecoveryAt: thread.lastIncompleteTurnRecoveryAt,
     lastMessage: thread.lastMessage,
   };
+}
+
+function buildIncompleteTurnRecoveryMessage(thread: ThreadEntry): string {
+  const toolName = thread.lastToolResultName || thread.lastTool || "a tool";
+  const lines = [
+    "Recurso recovery:",
+    "",
+    `Your previous turn ended immediately after the ${toolName} tool result, before you produced a post-tool assistant response.`,
+    "Continue from the completed tool result. Do not repeat completed work unless the result was insufficient.",
+    "If the assigned task is complete, report completion to your parent with recurso_message_thread using type \"done\".",
+    "If you are blocked, ask the parent with recurso_message_thread using type \"question\".",
+    "Otherwise, continue only the assigned task.",
+    "",
+    `Recovery attempt: ${thread.incompleteTurnRecoveries || 0}`,
+  ];
+  return lines.join("\n");
 }
 
 function buildThreadPrompt(input: {
@@ -1994,4 +2064,9 @@ function readSessionHeader(sessionFile: string): any | undefined {
 function envFlag(name: string): boolean {
   const value = process.env[name];
   return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
+}
+
+function autoRecoverIncompleteTurns(): boolean {
+  const value = process.env[RECURSO_AUTO_RECOVER_INCOMPLETE_TURNS_ENV]?.toLowerCase();
+  return value !== "0" && value !== "false" && value !== "off";
 }

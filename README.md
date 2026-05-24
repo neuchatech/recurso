@@ -43,7 +43,7 @@ local message bus and a way to run more Pi agents.
 
 ## Status
 
-`v1.1.5` is the current public release. The core tool names, message
+`v1.1.6` is the current public release. The core tool names, message
 contract, default session-history behavior, and snapshot schema are intended to
 remain compatible across `1.x`.
 
@@ -315,6 +315,8 @@ Environment variables:
 | `RECURSO_MAX_PARALLEL_THREADS` | `10` | Maximum live Recurso threads in one Recurso run tree. |
 | `RECURSO_BOOTSTRAP_CHILDREN` | auto | Set `1` to force child processes to load this extension by path; set `0` to disable. |
 | `RECURSO_SHUTDOWN_BEHAVIOR` | `keep` | Parent Pi session shutdown behavior. `keep` leaves spawned workers running; `terminate` restores the earlier parent-session-scoped cleanup behavior. |
+| `RECURSO_AUTO_RECOVER_INCOMPLETE_TURNS` | enabled | Set `0`, `false`, or `off` to disable worker auto-recovery when Pi ends immediately after a tool result without a post-tool response. |
+| `RECURSO_MAX_INCOMPLETE_TURN_RECOVERIES` | `3` | Maximum recovery follow-ups per worker for incomplete post-tool turns. |
 | `RECURSO_OPENAI_CACHE_LINEAGE` | unset | Experimental. Set `1` to give OpenAI parent and forked Recurso sessions the same hashed `prompt_cache_key` lineage for better fork prompt-cache reuse. |
 | `RECURSO_DEBUG` | unset | If set, mirrors child stderr to the manager stderr. |
 

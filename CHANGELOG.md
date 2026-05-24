@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.6 - 2026-05-24
+
+Incomplete turn recovery release.
+
+- `recurso_message_thread` no longer asks Pi to terminate the worker turn after
+  `done` or `question`; workers can stop naturally after reporting.
+- Workers now auto-recover when Pi ends immediately after a tool result without
+  producing a post-tool assistant response.
+- Added environment controls for incomplete turn recovery.
+
 ## 1.1.5 - 2026-05-24
 
 Concrete parent identity guidance release.
