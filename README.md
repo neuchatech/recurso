@@ -39,7 +39,7 @@ local message bus and a way to run more Pi agents.
 
 ## Status
 
-`v1.0.0` is the first stable public release. The core tool names, message
+`v1.1.0` is the current public release. The core tool names, message
 contract, default session-history behavior, and snapshot schema are intended to
 remain compatible across `1.x`.
 
@@ -228,6 +228,25 @@ See [`examples/`](examples/) for copy-pasteable prompts:
   keep implementation and verification in separate live threads.
 
 See [`docs/tool-schemas.md`](docs/tool-schemas.md) for the v1 tool contract.
+
+## Provider Cache Behavior
+
+Recurso always preserves the logical Pi conversation when it forks a thread.
+Provider-side prompt cache reuse is different: each model provider decides what
+counts as the same cache line. Recurso 1.1 includes a probe harness and one
+opt-in OpenAI cache-lineage experiment so users can make informed choices.
+
+| Provider path | Current result | Recurso wake-up pattern |
+| --- | --- | --- |
+| Anthropic direct | Strong. Parent and fork both read cache via Pi's Anthropic `cache_control` behavior. | Works when an idle child wakes after the parent has continued. |
+| OpenAI direct | Partial. `RECURSO_OPENAI_CACHE_LINEAGE=1` can make parent and fork share `prompt_cache_key`, but hits are ordering-sensitive. | Best-effort only; child may miss if the parent advances first. |
+| OpenRouter DS4 pinned to DeepSeek | Mixed. Fork-first can hit, but timing and routing affect results. | Best-effort only. |
+| Gemini AI Studio | No implicit cache hits observed for `gemini-2.5-flash` or `gemini-3.5-flash`. | Needs explicit `cachedContent` work before it can be treated as cache-aware. |
+
+The practical guidance is simple: use Recurso for orchestration first, and
+treat provider cache reuse as an optimization. Anthropic currently looks best
+for sleeping workers that wake later with warm cache. OpenAI and OpenRouter can
+still benefit, but should not drive scheduler correctness.
 
 ## Configuration
 

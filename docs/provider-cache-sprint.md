@@ -1,10 +1,10 @@
-# Recurso V2 Provider Cache Sprint
+# Recurso Provider Cache Sprint
 
 ## Goal
 
 Determine whether Recurso can preserve provider-side prompt/cache warmth across Pi forks, and identify what Pi/provider changes would be required for cache-friendly branching.
 
-Recurso V1 guarantees logical context preservation. V2 should explore whether some providers can also preserve cached compute, or whether Recurso should offer provider-specific continuation, branch, or cache-seeding strategies.
+Recurso 1.x guarantees logical context preservation. This sprint explores whether some providers can also preserve cached compute, or whether Recurso should offer provider-specific continuation, branch, or cache-seeding strategies.
 
 ## Working Hypothesis
 
@@ -34,7 +34,7 @@ Provider cache survival after a fork is not a generic capability. It depends on 
    - `can-preserve-with-pi-changes`
    - `logical-only`
    - `unknown`
-4. Proposed Pi/Recurso V2 changes are listed with risks and required upstream/provider work.
+4. Proposed Pi/Recurso follow-up changes are listed with risks and required upstream/provider work.
 
 ## Test Protocol
 
@@ -84,7 +84,7 @@ same parent session continuation:
   cacheRead: 11520
 ```
 
-Updated conclusion: OpenRouter DS4 fork-cache behavior is not settled by a single run. V2 should run repeated trials and capture request-shaping details, including cache key/session id, provider routing payload, system prompt shape, ordering, timing, and raw usage fields.
+Updated conclusion: OpenRouter DS4 fork-cache behavior is not settled by a single run. Recurso should run repeated trials and capture request-shaping details, including cache key/session id, provider routing payload, system prompt shape, ordering, timing, and raw usage fields.
 
 ## Current Provider Probe Results
 
@@ -101,7 +101,7 @@ All probes used `scripts/provider-cache-probe.mjs` from this branch. Each run se
 
 Notes:
 
-- OpenRouter DS4 is classified as `preserves-cache` for current Recurso, but with a caveat: earlier manual testing missed on the fork. V2 should sweep settle delay, corpus size, and provider routing.
+- OpenRouter DS4 is classified as `preserves-cache` for current Recurso, but with a caveat: earlier manual testing missed on the fork. Future probes should sweep settle delay, corpus size, and provider routing.
 - OpenAI is the cleanest failure mode: same-parent cache works while fork cache misses. This strongly suggests a Pi-level cache-lineage patch can help.
 - Gemini is not yet a fork-specific failure. It first needs either a probe shape that triggers implicit caching or a Pi provider patch for explicit cached content.
 - Anthropic's dashboard can show prompt caching as "not enabled" before visible cache activity, but the API counters confirm cache creation and reads in this probe.
@@ -175,7 +175,7 @@ Keys were loaded from `recurso/.env`.
 
 Anthropic dashboard note: API prompt caching is enabled per request by sending `cache_control` breakpoints. A dashboard "not enabled" state is not a separate Recurso setup blocker unless cache-enabled requests still return no `cache_read_input_tokens` / `cache_creation_input_tokens`.
 
-## Possible V2 Directions
+## Possible 1.x Directions
 
 - Document provider cache behavior and expose `recurso_cache_profile` diagnostics.
 - Add a `continue_thread` preference for cache-sensitive work, nudging agents away from unnecessary forks.
@@ -215,7 +215,7 @@ The Recurso opt-in lineage hook confirms the fix shape: derive a stable root-ses
 
 Ordering caveat: the lineage hook is not a complete branch-cache guarantee. It restored cache hits in `fork-first`, but `idle-fork-parent-first` missed after the parent continued. The current working theory is that `prompt_cache_key` improves routing/cache affinity but does not preserve multiple branch prefixes as durable named cache entries. OpenAI may need a different continuation primitive, or Recurso should treat this as a best-effort optimization rather than a scheduler guarantee.
 
-`previous_response_id` is worth a separate experiment as a branch-like conversation-state primitive, but it is not documented as cache cloning and may require different storage/privacy assumptions.
+`previous_response_id` and Responses conversations are worth separate experiments as branch-like conversation-state primitives, but they are not documented as cache cloning and may require different storage/privacy assumptions. The older Assistants Threads API should not be the target: OpenAI has deprecated Assistants/Threads in favor of Responses plus Conversations, with Assistants scheduled to shut down on 2026-08-26.
 
 ### Gemini Direct
 

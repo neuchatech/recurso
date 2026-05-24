@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0 - 2026-05-24
+
+Provider cache exploration release.
+
+- Added an experimental OpenAI cache-lineage hook gated by `RECURSO_OPENAI_CACHE_LINEAGE=1`.
+- Added provider-cache probe ordering modes for fork-first, parent-first, and idle-fork-parent-first workflows.
+- Documented current provider cache behavior for Anthropic, OpenAI, OpenRouter/DeepSeek, and Gemini.
+- Added provider cache probe env examples for OpenRouter, DeepSeek, OpenAI, Gemini, Anthropic, Vertex, and Bedrock.
+- Confirmed Anthropic is currently the strongest provider path for Recurso's stop/wake worker pattern.
+
 ## 1.0.0 - 2026-05-24
 
 First stable public release.
