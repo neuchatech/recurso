@@ -47,7 +47,8 @@ when a thread prompt provides them.
 Give each spawned thread:
 
 - Recurso will inject the worker's concrete thread id and parent/orchestrator
-  id automatically; do not contradict that identity in your task.
+  id automatically at the end of the worker's initial message; do not write
+  identity boilerplate like "you are thread X" in your task.
 - A bounded objective.
 - Read and write scope.
 - Expected deliverable.

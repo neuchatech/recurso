@@ -32,10 +32,11 @@ Parameters:
 Fork the current Pi session, or an existing Recurso thread, into a live
 Recurso thread.
 
-The spawned worker receives an explicit visible identity and assignment packet:
-worker thread id, parent/orchestrator thread id, whether it is a fresh or forked
-worker, report-back instructions, and stop-after-`done` / stop-after-`question`
-rules.
+The spawned worker's initial message ends with a Recurso-generated worker
+context footer: worker thread id, parent/orchestrator thread id, whether it is
+a fresh or forked worker, report-back instructions, and stop-after-`done` /
+stop-after-`question` rules. Orchestrators should pass the task itself rather
+than writing identity boilerplate into the tool call.
 
 Parameters:
 

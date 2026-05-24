@@ -137,9 +137,10 @@ recurso_message_thread({
 })
 ```
 
-Spawned workers receive their concrete thread id and parent/orchestrator thread
-id in their first visible prompt. Prefer that concrete parent id for reports;
-`target: "parent"` remains available as a live-run convenience alias.
+Spawned workers receive a Recurso-generated footer at the end of their first
+visible prompt with their concrete thread id and parent/orchestrator thread id.
+Prefer that concrete parent id for reports; `target: "parent"` remains
+available as a live-run convenience alias.
 
 ## Session History
 

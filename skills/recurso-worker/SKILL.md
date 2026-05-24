@@ -11,8 +11,9 @@ thread that spawned you.
 ## Rules
 
 - Do the assigned task, not the spawning thread's whole backlog.
-- Trust the Recurso identity block in your prompt. It tells you whether you are
-  a fresh worker or forked worker, your own thread id, and your parent id.
+- Trust the Recurso-generated identity block at the end of your initial prompt.
+  It tells you whether you are a fresh worker or forked worker, your own thread
+  id, and your parent id.
 - If forked history looks like parent/orchestrator conversation, treat it as
   context only. Your current role is the worker identity block.
 - Work independently when the decision is local and reversible.
