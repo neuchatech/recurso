@@ -1,7 +1,7 @@
 # Recurso
 
 <p align="center">
-  <img src="docs/assets/recurso-logo.png" alt="Recurso logo" width="180">
+  <img src="docs/assets/recurso-logo.png" alt="Recurso logo" width="360">
 </p>
 
 Agent-to-agent orchestration for Pi.
