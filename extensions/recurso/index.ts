@@ -16,9 +16,10 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
-const RECURSO_API_VERSION = "1.1.0";
+const RECURSO_API_VERSION = "1.1.2";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
+const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
 const EXTENSION_FILE = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = dirname(dirname(dirname(EXTENSION_FILE)));
 const PI_DEFAULT_SESSION_DIR_VALUES = new Set(["default", "pi", "pi-default", "history"]);
@@ -519,6 +520,10 @@ class RecursoManager {
     if (this.baseCwd) this.writeSnapshot(this.baseCwd);
   }
 
+  release(): void {
+    if (this.baseCwd) this.writeSnapshot(this.baseCwd);
+  }
+
   private async startThread(options: StartThreadOptions): Promise<ThreadEntry> {
     const cwd = options.ctx.cwd || this.baseCwd || process.cwd();
     this.setCwd(cwd);
@@ -868,7 +873,11 @@ export default function recurso(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", () => {
-    manager.shutdown();
+    if (shutdownBehavior() === "terminate") {
+      manager.shutdown();
+    } else {
+      manager.release();
+    }
   });
 
   pi.on("before_provider_request", (event, ctx) => {
@@ -1197,6 +1206,10 @@ function currentThinkingLevel(ctx: any): ThinkingLevel | undefined {
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return value === "off" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh";
+}
+
+function shutdownBehavior(): "keep" | "terminate" {
+  return process.env[RECURSO_SHUTDOWN_BEHAVIOR_ENV]?.toLowerCase() === "terminate" ? "terminate" : "keep";
 }
 
 function applyState(thread: ThreadEntry, state: RpcState): void {

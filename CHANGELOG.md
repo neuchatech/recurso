@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2 - 2026-05-24
+
+Worker lifetime release.
+
+- Recurso no longer terminates spawned workers just because the parent Pi
+  session shuts down. Use `recurso-stop-all` for explicit cleanup.
+- Added `RECURSO_SHUTDOWN_BEHAVIOR=terminate` for users who prefer the previous
+  parent-session-scoped cleanup behavior.
+
 ## 1.1.1 - 2026-05-24
 
 VS Code history and thinking-control release.

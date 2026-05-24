@@ -4,7 +4,7 @@ Recurso v1 exposes six namespaced Pi tools. Tool details include:
 
 ```json
 {
-  "recursoApiVersion": "1.1.0",
+  "recursoApiVersion": "1.1.2",
   "schemaVersion": 1
 }
 ```
@@ -95,6 +95,7 @@ Parameters:
 - `RECURSO_MAX_DEPTH`: recursive depth cap. Default `3`.
 - `RECURSO_MAX_PARALLEL_THREADS`: live threads per run tree. Default `10`.
 - `RECURSO_BOOTSTRAP_CHILDREN`: force or disable extension bootstrapping.
+- `RECURSO_SHUTDOWN_BEHAVIOR`: `keep` or `terminate`. Default `keep`.
 - `RECURSO_OPENAI_CACHE_LINEAGE`: experimental OpenAI fork-cache lineage
   key. Set `1` to rewrite OpenAI `prompt_cache_key` for parent/fork reuse.
 - `RECURSO_DEBUG`: mirror child stderr to manager stderr.
