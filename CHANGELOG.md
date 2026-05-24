@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.8 - 2026-05-24
+
+Native dormant routing release.
+
+- Recurso now records each manager's Pi session file in run snapshots.
+- Child threads receive their parent Pi session path through the Recurso runtime
+  environment.
+- Messages to non-live Recurso thread ids now reopen the target Pi session in
+  RPC mode and deliver the message natively instead of depending on a live
+  supervisor process.
+
+## 1.1.7 - 2026-05-24
+
+Message result clarity release.
+
+- `recurso_message_thread` tool results now show the routed message body,
+  delivery status, and whether the target was directly reached.
+- Worker guidance now asks workers to produce one brief acknowledgement after a
+  `done` or `question` tool result before waiting, avoiding incomplete Pi turns.
+
+## 1.1.6 - 2026-05-24
+
+Incomplete turn recovery release.
+
+- `recurso_message_thread` no longer asks Pi to terminate the worker turn after
+  `done` or `question`; workers can stop naturally after reporting.
+- Workers now auto-recover when Pi ends immediately after a tool result without
+  producing a post-tool assistant response.
+- Added environment controls for incomplete turn recovery.
+
 ## 1.1.5 - 2026-05-24
 
 Concrete parent identity guidance release.

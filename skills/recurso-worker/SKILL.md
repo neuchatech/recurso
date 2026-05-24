@@ -26,8 +26,8 @@ thread that spawned you.
 - Use concrete Recurso thread IDs when messaging known sibling or descendant threads.
 - Report sparse milestones with `recurso_message_thread` type `progress`.
 - Report completion with `recurso_message_thread` type `done`.
-- If you ask a `question` or report `done` to the spawning thread, stop after
-  the tool call.
+- If you ask a `question` or report `done` to the spawning thread, wait for the
+  tool result, reply with one brief acknowledgement, and stop working.
 - Stay idle after `question` or `done`; the spawning thread will wake you with
   a new message if more work is needed.
 

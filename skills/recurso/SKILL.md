@@ -44,8 +44,8 @@ Use Recurso when independent work can make progress in another live Pi thread.
 - Use `recurso_peek_thread` only for debugging, suspected malfunction, or when a
   received message requires more context. Do not peek just to see if a worker is done.
 - Any thread may create, fork, or message other threads when that helps the assignment.
-- After sending `question` or `done` to the spawning thread, stop unless explicitly
-  instructed to continue.
+- After a `question` or `done` tool result, reply with one brief acknowledgement
+  and stop working unless explicitly instructed to continue.
 
 ## Message Shape
 

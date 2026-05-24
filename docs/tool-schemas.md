@@ -4,7 +4,7 @@ Recurso v1 exposes six namespaced Pi tools. Tool details include:
 
 ```json
 {
-  "recursoApiVersion": "1.1.5",
+  "recursoApiVersion": "1.1.8",
   "schemaVersion": 1
 }
 ```
@@ -34,8 +34,8 @@ Recurso thread.
 
 The spawned worker's initial message ends with a Recurso-generated worker
 context footer: worker thread id, parent/orchestrator thread id, whether it is
-a fresh or forked worker, report-back instructions, and stop-after-`done` /
-stop-after-`question` rules. Orchestrators should pass the task itself rather
+a fresh or forked worker, report-back instructions, and post-report wait rules.
+Orchestrators should pass the task itself rather
 than writing identity boilerplate into the tool call.
 
 Parameters:
@@ -56,12 +56,17 @@ Parameters:
 - `message` string, required: self-contained message.
 - `deliver_as` enum, optional: `followUp` or `steer`; defaults to `followUp`.
 
-`question` and `done` messages to the spawning thread ask the sender to stop
-after the tool call. The process remains alive and can be woken later.
+After `question` and `done` message tool results to the spawning thread, the
+sender should reply with one brief acknowledgement and stop working. The process
+remains alive and can be woken later.
 
 Supervisor managers route Recurso message tool calls from child RPC events.
 Routing is attempted from both tool-start arguments and tool-end result details
 so a worker report is not lost if one event shape is incomplete.
+
+If the target thread process is no longer live, Recurso resolves its Pi session
+file from run snapshots or the parent runtime environment, reopens that session
+in RPC mode, and sends the message with Pi's normal prompt path.
 
 ## `recurso_peek_thread`
 
@@ -106,6 +111,11 @@ Parameters:
 - `RECURSO_MAX_PARALLEL_THREADS`: live threads per run tree. Default `10`.
 - `RECURSO_BOOTSTRAP_CHILDREN`: force or disable extension bootstrapping.
 - `RECURSO_SHUTDOWN_BEHAVIOR`: `keep` or `terminate`. Default `keep`.
+- `RECURSO_AUTO_RECOVER_INCOMPLETE_TURNS`: worker auto-recovery for turns that
+  end immediately after a tool result without a post-tool response. Enabled by
+  default; set `0`, `false`, or `off` to disable.
+- `RECURSO_MAX_INCOMPLETE_TURN_RECOVERIES`: recovery follow-up cap per worker.
+  Default `3`.
 - `RECURSO_OPENAI_CACHE_LINEAGE`: experimental OpenAI fork-cache lineage
   key. Set `1` to rewrite OpenAI `prompt_cache_key` for parent/fork reuse.
 - `RECURSO_DEBUG`: mirror child stderr to manager stderr.

@@ -17,10 +17,12 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
-const RECURSO_API_VERSION = "1.1.5";
+const RECURSO_API_VERSION = "1.1.8";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
+const RECURSO_AUTO_RECOVER_INCOMPLETE_TURNS_ENV = "RECURSO_AUTO_RECOVER_INCOMPLETE_TURNS";
+const RECURSO_MAX_INCOMPLETE_TURN_RECOVERIES_ENV = "RECURSO_MAX_INCOMPLETE_TURN_RECOVERIES";
 const RECURSO_DASHBOARD_DEFAULT_PACKAGE = "github:neuchatech/recurso-dashboard";
 const RECURSO_DASHBOARD_DEFAULT_PORT = 3737;
 const EXTENSION_FILE = fileURLToPath(import.meta.url);
@@ -72,6 +74,11 @@ interface ThreadEntry {
   lastError?: string;
   lastAssistantText?: string;
   lastTool?: string;
+  lastToolResultName?: string;
+  lastToolResultAt?: number;
+  awaitingPostToolResponse?: boolean;
+  incompleteTurnRecoveries?: number;
+  lastIncompleteTurnRecoveryAt?: number;
   lastMessage?: RoutedThreadMessage;
   rpc: RpcProcess;
 }
@@ -99,6 +106,11 @@ interface ThreadSnapshot {
   lastError?: string;
   lastAssistantText?: string;
   lastTool?: string;
+  lastToolResultName?: string;
+  lastToolResultAt?: number;
+  awaitingPostToolResponse?: boolean;
+  incompleteTurnRecoveries?: number;
+  lastIncompleteTurnRecoveryAt?: number;
   lastMessage?: RoutedThreadMessage;
 }
 
@@ -108,6 +120,9 @@ interface RunSnapshot {
   parentId?: string | null;
   runId?: string;
   managerPid?: number;
+  managerSessionFile?: string;
+  managerSessionId?: string;
+  managerSessionName?: string;
   depth?: number;
   packageRoot?: string;
   updatedAt?: number;
@@ -121,6 +136,13 @@ interface RoutedThreadMessage {
   message: string;
   deliverAs: DeliveryMode;
   routedAt: number;
+}
+
+interface RouteMessageResult {
+  routed: boolean;
+  reached: boolean;
+  deliveryStatus: "delivered" | "not_delivered";
+  note: string;
 }
 
 interface StartThreadOptions {
@@ -349,12 +371,19 @@ class RecursoManager {
   private threads = new Map<string, ThreadEntry>();
   private routedMessageToolCalls = new Set<string>();
   private baseCwd: string | undefined;
+  private ownSessionFile = process.env.RECURSO_SESSION_FILE || "";
+  private ownSessionId = "";
+  private ownSessionName = "";
+  private readonly parentSessionFile = process.env.RECURSO_PARENT_SESSION_FILE || "";
   private readonly managerId = process.env.RECURSO_THREAD_ID || "parent";
   private readonly parentId = process.env.RECURSO_PARENT_THREAD_ID || "";
   private readonly runId = process.env.RECURSO_RUN_ID || `${safeName(this.managerId)}-${process.pid}`;
   private readonly depth = numberFromEnv("RECURSO_DEPTH", 0);
   private readonly maxDepth = numberFromEnv("RECURSO_MAX_DEPTH", 3);
   private readonly maxParallelThreads = numberFromEnv("RECURSO_MAX_PARALLEL_THREADS", 10);
+  private readonly maxIncompleteTurnRecoveries = autoRecoverIncompleteTurns()
+    ? numberFromEnv(RECURSO_MAX_INCOMPLETE_TURN_RECOVERIES_ENV, 3)
+    : 0;
   private bootstrapChildren = process.env.RECURSO_BOOTSTRAP_CHILDREN === "1";
 
   constructor(private readonly pi: ExtensionAPI) {}
@@ -367,6 +396,16 @@ class RecursoManager {
     ensureDir(this.promptsDir(cwd));
     ensureDir(this.runsDir(cwd));
     this.writeSnapshot(cwd);
+  }
+
+  setSessionContext(ctx: any): void {
+    const sessionFile = currentSessionFile(ctx);
+    if (sessionFile) this.ownSessionFile = sessionFile;
+    const sessionId = currentSessionId(ctx);
+    if (sessionId) this.ownSessionId = sessionId;
+    const sessionName = currentSessionName(ctx);
+    if (sessionName) this.ownSessionName = sessionName;
+    if (this.baseCwd) this.writeSnapshot(this.baseCwd);
   }
 
   setBootstrapChildren(value: boolean): void {
@@ -417,32 +456,47 @@ class RecursoManager {
     type: ThreadMessageType;
     message: string;
     deliverAs: DeliveryMode;
-  }): Promise<{ routed: boolean; note: string }> {
+  }): Promise<RouteMessageResult> {
     const routed: RoutedThreadMessage = { ...params, routedAt: Date.now() };
 
     if (params.target === "parent" || (this.parentId && params.target === this.parentId)) {
       if (this.parentId) {
+        const parent = await this.deliverToResolvableThread(this.parentId, routed, "parent");
+        if (parent) return parent;
         return {
           routed: false,
-          note: `Message emitted for supervisor routing from ${params.from} to ${params.target}.`,
+          reached: false,
+          deliveryStatus: "not_delivered",
+          note: `Parent thread ${this.parentId} could not be found or resumed for routing.`,
         };
       }
       return {
         routed: false,
+        reached: false,
+        deliveryStatus: "not_delivered",
         note: "This Recurso manager has no parent thread.",
       };
     }
 
     if (params.target === "root" && this.parentId) {
+      const root = await this.deliverToResolvableThread("parent", routed, "root");
+      if (root) return root;
       return {
         routed: false,
-        note: `Message emitted for supervisor routing from ${params.from} to root.`,
+        reached: false,
+        deliveryStatus: "not_delivered",
+        note: `Root parent thread could not be found or resumed for routing.`,
       };
     }
 
     if (params.target === this.managerId || params.target === "root") {
       await this.deliverToLocalAgent(routed);
-      return { routed: true, note: `Routed ${params.type} message from ${params.from} to this thread.` };
+      return {
+        routed: true,
+        reached: true,
+        deliveryStatus: "delivered",
+        note: `Routed ${params.type} message from ${params.from} to this thread.`,
+      };
     }
 
     const targetThread = this.threads.get(params.target);
@@ -452,12 +506,22 @@ class RecursoManager {
       await targetThread.rpc.prompt(formatThreadPrompt(params), params.deliverAs);
       await this.refreshThreadState(targetThread).catch(() => undefined);
       this.writeSnapshot(targetThread.cwd);
-      return { routed: true, note: `Routed ${params.type} message from ${params.from} to ${params.target}.` };
+      return {
+        routed: true,
+        reached: true,
+        deliveryStatus: "delivered",
+        note: `Routed ${params.type} message from ${params.from} to ${params.target}.`,
+      };
     }
+
+    const resumed = await this.deliverToResolvableThread(params.target, routed);
+    if (resumed) return resumed;
 
     return {
       routed: false,
-      note: `Message target ${params.target} is not local. A supervising Recurso manager may route it.`,
+      reached: false,
+      deliveryStatus: "not_delivered",
+      note: `Message target ${params.target} was not found in live threads or Recurso run snapshots.`,
     };
   }
 
@@ -573,12 +637,14 @@ class RecursoManager {
     fs.writeFileSync(promptFile, prompt, "utf8");
 
     const args = this.buildChildArgs(cwd, promptFile, options);
+    const parentSessionFile = currentSessionFile(options.ctx) || this.ownSessionFile;
     const rpc = new RpcProcess(args, {
       cwd,
       env: {
         ...process.env,
         RECURSO_THREAD_ID: id,
         RECURSO_PARENT_THREAD_ID: this.managerId,
+        RECURSO_PARENT_SESSION_FILE: parentSessionFile,
         RECURSO_RUN_ID: this.runId,
         RECURSO_DEPTH: String(childDepth),
       },
@@ -689,6 +755,21 @@ class RecursoManager {
     return args;
   }
 
+  private buildResumeArgs(sessionFile: string): string[] {
+    const args = [
+      "--mode",
+      "rpc",
+      "--session",
+      sessionFile,
+    ];
+
+    if (this.bootstrapChildren) {
+      args.push("--no-extensions", "--extension", EXTENSION_FILE);
+    }
+
+    return args;
+  }
+
   private async handleThreadEvent(threadId: string, event: any): Promise<void> {
     const thread = this.threads.get(threadId);
     if (!thread) return;
@@ -699,11 +780,15 @@ class RecursoManager {
       thread.status = "running";
     } else if (event?.type === "agent_end") {
       if (thread.status !== "done" && thread.status !== "waiting") {
-        thread.status = "idle";
+        const recovered = await this.recoverIncompleteTurn(thread);
+        if (!recovered) thread.status = "idle";
       }
     } else if (event?.type === "message_end" && event.message?.role === "assistant") {
       const text = firstText(event.message);
       if (text) thread.lastAssistantText = text;
+      if (thread.awaitingPostToolResponse) {
+        thread.awaitingPostToolResponse = false;
+      }
     } else if (event?.type === "tool_execution_start") {
       thread.lastTool = event.toolName;
       if (event.toolName === TOOL_MESSAGE) {
@@ -712,10 +797,17 @@ class RecursoManager {
         });
       }
     } else if (event?.type === "tool_execution_end") {
+      thread.lastTool = event.toolName || thread.lastTool;
+      thread.lastToolResultName = event.toolName || thread.lastTool;
+      thread.lastToolResultAt = Date.now();
+      thread.awaitingPostToolResponse = true;
       if (event.toolName === TOOL_MESSAGE) {
         await this.routeSupervisedMessage(thread, toolMessageArgsFromEvent(event), event.toolCallId).catch((error) => {
           thread.lastError = error instanceof Error ? error.message : String(error);
         });
+        if (thread.status === "done" || thread.status === "waiting") {
+          thread.awaitingPostToolResponse = false;
+        }
       }
     } else if (event?.type === "extension_ui_request") {
       if (event.method === "confirm") {
@@ -724,6 +816,35 @@ class RecursoManager {
     }
 
     this.writeSnapshot(thread.cwd);
+  }
+
+  private async recoverIncompleteTurn(thread: ThreadEntry): Promise<boolean> {
+    if (!thread.awaitingPostToolResponse) return false;
+    if (isDead(thread)) return false;
+    if (this.maxIncompleteTurnRecoveries <= 0) return false;
+
+    const recoveries = thread.incompleteTurnRecoveries || 0;
+    if (recoveries >= this.maxIncompleteTurnRecoveries) {
+      thread.lastError = `Turn ended after ${thread.lastToolResultName || thread.lastTool || "a tool"} without a post-tool response; recovery limit ${this.maxIncompleteTurnRecoveries} reached.`;
+      return false;
+    }
+
+    thread.incompleteTurnRecoveries = recoveries + 1;
+    thread.lastIncompleteTurnRecoveryAt = Date.now();
+    thread.awaitingPostToolResponse = false;
+    thread.status = "running";
+    thread.updatedAt = Date.now();
+    this.writeSnapshot(thread.cwd);
+
+    try {
+      await thread.rpc.prompt(buildIncompleteTurnRecoveryMessage(thread), "followUp");
+      await this.refreshThreadState(thread).catch(() => undefined);
+      return true;
+    } catch (error) {
+      thread.lastError = error instanceof Error ? error.message : String(error);
+      thread.status = "idle";
+      return false;
+    }
   }
 
   private async routeSupervisedMessage(fromThread: ThreadEntry, args: any, toolCallId?: string): Promise<void> {
@@ -744,13 +865,25 @@ class RecursoManager {
     if (parsed.type === "done") fromThread.status = "done";
 
     if (parsed.target === "parent" || parsed.target === this.managerId || parsed.target === "root") {
-      await this.deliverToLocalAgent(fromThread.lastMessage);
+      if (parsed.target === "parent" && this.parentId && this.parentId !== this.managerId) {
+        const delivered = await this.deliverToResolvableThread(this.parentId, fromThread.lastMessage, "parent");
+        if (!delivered) {
+          throw new Error(`Parent thread ${this.parentId} could not be found or resumed for routing.`);
+        }
+      } else {
+        await this.deliverToLocalAgent(fromThread.lastMessage);
+      }
       if (toolCallId) this.routedMessageToolCalls.add(toolCallId);
       return;
     }
 
     const target = this.threads.get(parsed.target);
-    if (!target || isDead(target)) return;
+    if (!target || isDead(target)) {
+      const delivered = await this.deliverToResolvableThread(parsed.target, fromThread.lastMessage);
+      if (!delivered) return;
+      if (toolCallId) this.routedMessageToolCalls.add(toolCallId);
+      return;
+    }
 
     await target.rpc.prompt(
       formatThreadPrompt({
@@ -777,6 +910,146 @@ class RecursoManager {
         const modeText = errorWithMode instanceof Error ? errorWithMode.message : String(errorWithMode);
         throw new Error(`${messageText}${modeText && modeText !== messageText ? ` (${modeText})` : ""}`);
       }
+    }
+  }
+
+  private async deliverToResolvableThread(
+    targetId: string,
+    message: RoutedThreadMessage,
+    displayTarget = targetId,
+  ): Promise<RouteMessageResult | undefined> {
+    const existing = this.threads.get(targetId);
+    if (existing && !isDead(existing)) {
+      await existing.rpc.prompt(formatThreadPrompt(message), message.deliverAs);
+      await this.refreshThreadState(existing).catch(() => undefined);
+      existing.lastMessage = message;
+      existing.updatedAt = Date.now();
+      this.writeSnapshot(existing.cwd);
+      return {
+        routed: true,
+        reached: true,
+        deliveryStatus: "delivered",
+        note: `Routed ${message.type} message from ${message.from} to ${displayTarget}.`,
+      };
+    }
+
+    const sessionFile = this.resolveThreadSessionFile(targetId);
+    if (!sessionFile) return undefined;
+
+    const thread = await this.resumeSessionThread(targetId, sessionFile);
+    await thread.rpc.prompt(formatThreadPrompt(message), message.deliverAs);
+    await this.refreshThreadState(thread).catch(() => undefined);
+    thread.lastMessage = message;
+    thread.updatedAt = Date.now();
+    this.writeSnapshot(thread.cwd);
+    return {
+      routed: true,
+      reached: true,
+      deliveryStatus: "delivered",
+      note: `Resumed Pi session for ${displayTarget} and routed ${message.type} message from ${message.from}.`,
+    };
+  }
+
+  private resolveThreadSessionFile(targetId: string): string | undefined {
+    if ((targetId === "parent" || targetId === this.parentId) && this.parentSessionFile) {
+      return this.parentSessionFile;
+    }
+    if (targetId === this.managerId && this.ownSessionFile) {
+      return this.ownSessionFile;
+    }
+    if (!this.baseCwd) return undefined;
+
+    for (const snapshot of this.readRunSnapshots(this.baseCwd)) {
+      if (snapshot.managerId === targetId && snapshot.managerSessionFile) {
+        return snapshot.managerSessionFile;
+      }
+      for (const thread of snapshot.threads || []) {
+        if (thread.id === targetId && thread.sessionFile) {
+          return thread.sessionFile;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private resolveThreadParentId(targetId: string): string | undefined {
+    if (targetId === "parent") return "";
+    if (!this.baseCwd) return undefined;
+    for (const snapshot of this.readRunSnapshots(this.baseCwd)) {
+      if (snapshot.managerId === targetId) return snapshot.parentId || "";
+      for (const thread of snapshot.threads || []) {
+        if (thread.id === targetId) return thread.parentId;
+      }
+    }
+    return undefined;
+  }
+
+  private async resumeSessionThread(threadId: string, sessionFile: string): Promise<ThreadEntry> {
+    const existing = this.threads.get(threadId);
+    if (existing && !isDead(existing)) return existing;
+    if (!fs.existsSync(sessionFile)) throw new Error(`Session file for ${threadId} does not exist: ${sessionFile}`);
+
+    const cwd = this.baseCwd || process.cwd();
+    const args = this.buildResumeArgs(sessionFile);
+    const parentId = this.resolveThreadParentId(threadId) ?? (threadId === "parent" ? "" : this.parentId);
+    const rpc = new RpcProcess(args, {
+      cwd,
+      env: {
+        ...process.env,
+        RECURSO_THREAD_ID: threadId,
+        RECURSO_PARENT_THREAD_ID: parentId,
+        RECURSO_PARENT_SESSION_FILE: parentId === this.parentId ? this.parentSessionFile : "",
+        RECURSO_RUN_ID: this.runId,
+        RECURSO_DEPTH: String(this.depth),
+      },
+      onEvent: (event) => {
+        void this.handleThreadEvent(threadId, event);
+      },
+      onExit: (code, signal) => {
+        this.handleThreadExit(threadId, code, signal);
+      },
+      onProtocolError: (message) => {
+        const thread = this.threads.get(threadId);
+        if (thread) {
+          thread.lastError = message;
+          thread.updatedAt = Date.now();
+          this.writeSnapshot(thread.cwd);
+        }
+      },
+    });
+
+    const thread: ThreadEntry = {
+      id: threadId,
+      parentId: parentId || "parent",
+      task: "Resumed Recurso thread",
+      cwd,
+      depth: this.depth,
+      status: "starting",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      rpc,
+      sessionFile,
+    };
+    this.threads.set(threadId, thread);
+    this.writeSnapshot(cwd);
+
+    try {
+      await rpc.start();
+      thread.pid = rpc.pid;
+      await rpc.setQueueModes();
+      applyState(thread, await rpc.getState());
+      thread.status = thread.status === "running" ? "running" : "idle";
+      thread.updatedAt = Date.now();
+      this.writeSnapshot(cwd);
+      return thread;
+    } catch (error) {
+      thread.status = "error";
+      thread.lastError = error instanceof Error ? error.message : String(error);
+      thread.finishedAt = Date.now();
+      thread.updatedAt = Date.now();
+      rpc.terminate();
+      this.writeSnapshot(cwd);
+      throw error;
     }
   }
 
@@ -891,6 +1164,9 @@ class RecursoManager {
         parentId: this.parentId || null,
         runId: this.runId,
         managerPid: process.pid,
+        managerSessionFile: this.ownSessionFile || undefined,
+        managerSessionId: this.ownSessionId || undefined,
+        managerSessionName: this.ownSessionName || undefined,
         depth: this.depth,
         packageRoot: PACKAGE_ROOT,
         updatedAt: Date.now(),
@@ -911,6 +1187,7 @@ export default function recurso(pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     manager.setCwd(ctx.cwd);
+    manager.setSessionContext(ctx);
     const ownTool = pi.getAllTools().find((tool) => tool.name === TOOL_NEW);
     manager.setBootstrapChildren(ownTool?.sourceInfo?.scope === "temporary");
   });
@@ -1039,7 +1316,7 @@ export default function recurso(pi: ExtensionAPI) {
       "Use recurso_message_thread to communicate between Recurso threads.",
       "Use target parent to message the thread that spawned you.",
       "Default deliver_as is followUp. Use steer only for urgent corrections or blockers.",
-      "After sending type question or done to parent, stop working unless the spawning thread sends more instructions.",
+      "After a type question or done tool result, reply with one brief acknowledgement and wait for more instructions.",
     ],
     parameters: Type.Object({
       target: Type.String({ description: "Target thread ID, parent, or root." }),
@@ -1059,10 +1336,21 @@ export default function recurso(pi: ExtensionAPI) {
         deliverAs: parsed.deliverAs,
       });
 
+      const contentText = renderMessageToolResult({
+        result,
+        from: process.env.RECURSO_THREAD_ID || "parent",
+        target: parsed.target,
+        type: parsed.type,
+        message: parsed.message,
+        deliverAs: parsed.deliverAs,
+      });
+
       return {
-        content: [{ type: "text", text: result.note }],
+        content: [{ type: "text", text: contentText }],
         details: toolDetails({
           routed: result.routed,
+          reached: result.reached,
+          deliveryStatus: result.deliveryStatus,
           from: process.env.RECURSO_THREAD_ID || "parent",
           target: parsed.target,
           type: parsed.type,
@@ -1070,7 +1358,6 @@ export default function recurso(pi: ExtensionAPI) {
           deliverAs: parsed.deliverAs,
           deliver_as: parsed.deliverAs,
         }),
-        terminate: isSupervisorTarget(parsed.target) && (parsed.type === "question" || parsed.type === "done"),
       };
     },
   });
@@ -1485,11 +1772,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isSupervisorTarget(target: string): boolean {
-  const parentId = process.env.RECURSO_PARENT_THREAD_ID;
-  return Boolean(parentId) && (target === "parent" || target === parentId);
-}
-
 function newThreadId(): string {
   return `th-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -1530,6 +1812,24 @@ function pidIsAlive(pid: number): boolean {
 function currentSessionFile(ctx: any): string | undefined {
   try {
     const value = ctx.sessionManager?.getSessionFile?.();
+    return typeof value === "string" && value ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function currentSessionId(ctx: any): string | undefined {
+  try {
+    const value = ctx.sessionManager?.getSessionId?.();
+    return typeof value === "string" && value ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function currentSessionName(ctx: any): string | undefined {
+  try {
+    const value = ctx.sessionManager?.getSessionName?.();
     return typeof value === "string" && value ? value : undefined;
   } catch {
     return undefined;
@@ -1594,8 +1894,61 @@ function snapshotThread(thread: ThreadEntry): ThreadSnapshot {
     lastError: thread.lastError,
     lastAssistantText: thread.lastAssistantText,
     lastTool: thread.lastTool,
+    lastToolResultName: thread.lastToolResultName,
+    lastToolResultAt: thread.lastToolResultAt,
+    awaitingPostToolResponse: thread.awaitingPostToolResponse,
+    incompleteTurnRecoveries: thread.incompleteTurnRecoveries,
+    lastIncompleteTurnRecoveryAt: thread.lastIncompleteTurnRecoveryAt,
     lastMessage: thread.lastMessage,
   };
+}
+
+function buildIncompleteTurnRecoveryMessage(thread: ThreadEntry): string {
+  const toolName = thread.lastToolResultName || thread.lastTool || "a tool";
+  const lines = [
+    "Recurso recovery:",
+    "",
+    `Your previous turn ended immediately after the ${toolName} tool result, before you produced a post-tool assistant response.`,
+    "Continue from the completed tool result. Do not repeat completed work unless the result was insufficient.",
+    "If the assigned task is complete, report completion to your parent with recurso_message_thread using type \"done\".",
+    "If you are blocked, ask the parent with recurso_message_thread using type \"question\".",
+    "Otherwise, continue only the assigned task.",
+    "",
+    `Recovery attempt: ${thread.incompleteTurnRecoveries || 0}`,
+  ];
+  return lines.join("\n");
+}
+
+function renderMessageToolResult(input: {
+  result: RouteMessageResult;
+  from: string;
+  target: string;
+  type: ThreadMessageType;
+  message: string;
+  deliverAs: DeliveryMode;
+}): string {
+  const status =
+    input.result.deliveryStatus === "delivered"
+      ? "delivered"
+      : "not delivered";
+  const reached =
+    input.result.deliveryStatus === "delivered"
+      ? "yes"
+      : "no";
+  return [
+    "Recurso message result:",
+    `Status: ${status}`,
+    `Reached target: ${reached}`,
+    `From: ${input.from}`,
+    `Target: ${input.target}`,
+    `Type: ${input.type}`,
+    `Delivery: ${input.deliverAs}`,
+    "",
+    "Message:",
+    input.message,
+    "",
+    input.result.note,
+  ].join("\n");
 }
 
 function buildThreadPrompt(input: {
@@ -1636,7 +1989,7 @@ function buildThreadPrompt(input: {
     "- Use concrete Recurso thread IDs to message known sibling or descendant threads.",
     "- Use type question only for cross-boundary decisions or blockers.",
     "- Use type done when the assignment is complete.",
-    "- After question or done to your spawning thread, stop after the tool call unless you were explicitly told to keep working.",
+    "- After a question or done tool result, reply with one brief acknowledgement and then wait unless you were explicitly told to keep working.",
     "- Default deliver_as followUp. Use steer only for urgent blockers.",
     "",
     "Coordination:",
@@ -1696,8 +2049,8 @@ function buildGeneratedWorkerContext(input: {
     "- Treat forked conversation history as context, not as evidence that you are the parent/orchestrator.",
     "- Execute only within the scope you were assigned.",
     "- Report sparse progress only when useful.",
-    "- When complete or blocked, call recurso_message_thread and then stop.",
-    "- After sending type done or question, stop and wait to be woken.",
+    "- When complete or blocked, call recurso_message_thread, then reply with one brief acknowledgement and wait.",
+    "- After a type done or question tool result, do not continue working until you are woken.",
     "",
     "Report completion with:",
     "```text",
@@ -1994,4 +2347,9 @@ function readSessionHeader(sessionFile: string): any | undefined {
 function envFlag(name: string): boolean {
   const value = process.env[name];
   return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
+}
+
+function autoRecoverIncompleteTurns(): boolean {
+  const value = process.env[RECURSO_AUTO_RECOVER_INCOMPLETE_TURNS_ENV]?.toLowerCase();
+  return value !== "0" && value !== "false" && value !== "off";
 }
