@@ -10,6 +10,9 @@ Use Recurso when independent work can make progress in another live Pi thread.
 ## Mental Model
 
 - Every Recurso thread is a normal Pi agent with the same Recurso tools.
+- Spawned workers receive an automatic Recurso-generated footer at the end of
+  their initial message with their thread id, parent/orchestrator id, worker
+  type, and report-back example.
 - `parent` is a live-run routing alias for the thread that spawned the current thread.
 - Prefer concrete Recurso thread IDs when a prompt gives you one, especially for
   parent, sibling, or descendant messaging.

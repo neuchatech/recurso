@@ -347,6 +347,7 @@ class RpcProcess {
 
 class RecursoManager {
   private threads = new Map<string, ThreadEntry>();
+  private routedMessageToolCalls = new Set<string>();
   private baseCwd: string | undefined;
   private readonly managerId = process.env.RECURSO_THREAD_ID || "parent";
   private readonly parentId = process.env.RECURSO_PARENT_THREAD_ID || "";
@@ -378,6 +379,10 @@ class RecursoManager {
       return;
     }
     this.bootstrapChildren = value;
+  }
+
+  currentThreadId(): string {
+    return this.managerId;
   }
 
   async startFresh(options: StartThreadOptions): Promise<ThreadEntry> {
@@ -554,10 +559,12 @@ class RecursoManager {
 
     const id = newThreadId();
     const childDepth = this.depth + 1;
+    const workerKind = options.sourceSessionFile ? "forked worker" : "fresh worker";
     const promptFile = path.join(this.promptsDir(cwd), `${id}.md`);
     const prompt = buildThreadPrompt({
       id,
       parentId: this.managerId,
+      workerKind,
       task: options.task,
       context: options.context,
       depth: childDepth,
@@ -624,7 +631,13 @@ class RecursoManager {
       thread.updatedAt = Date.now();
       this.writeSnapshot(cwd);
 
-      await rpc.prompt(options.task, "followUp");
+      await rpc.prompt(buildInitialThreadMessage({
+        id,
+        parentId: this.managerId,
+        workerKind,
+        task: options.task,
+        context: options.context,
+      }), "followUp");
       thread.status = "running";
       thread.updatedAt = Date.now();
       await this.refreshThreadState(thread).catch(() => undefined);
@@ -694,7 +707,13 @@ class RecursoManager {
     } else if (event?.type === "tool_execution_start") {
       thread.lastTool = event.toolName;
       if (event.toolName === TOOL_MESSAGE) {
-        await this.routeSupervisedMessage(thread, event.args || {}).catch((error) => {
+        await this.routeSupervisedMessage(thread, toolMessageArgsFromEvent(event), event.toolCallId).catch((error) => {
+          thread.lastError = error instanceof Error ? error.message : String(error);
+        });
+      }
+    } else if (event?.type === "tool_execution_end") {
+      if (event.toolName === TOOL_MESSAGE) {
+        await this.routeSupervisedMessage(thread, toolMessageArgsFromEvent(event), event.toolCallId).catch((error) => {
           thread.lastError = error instanceof Error ? error.message : String(error);
         });
       }
@@ -707,7 +726,8 @@ class RecursoManager {
     this.writeSnapshot(thread.cwd);
   }
 
-  private async routeSupervisedMessage(fromThread: ThreadEntry, args: any): Promise<void> {
+  private async routeSupervisedMessage(fromThread: ThreadEntry, args: any, toolCallId?: string): Promise<void> {
+    if (toolCallId && this.routedMessageToolCalls.has(toolCallId)) return;
     const parsed = parseThreadMessageArgs(args);
     if (!parsed) return;
 
@@ -725,6 +745,7 @@ class RecursoManager {
 
     if (parsed.target === "parent" || parsed.target === this.managerId || parsed.target === "root") {
       await this.deliverToLocalAgent(fromThread.lastMessage);
+      if (toolCallId) this.routedMessageToolCalls.add(toolCallId);
       return;
     }
 
@@ -741,6 +762,7 @@ class RecursoManager {
     );
     target.lastMessage = fromThread.lastMessage;
     target.updatedAt = Date.now();
+    if (toolCallId) this.routedMessageToolCalls.add(toolCallId);
   }
 
   private async deliverToLocalAgent(message: RoutedThreadMessage): Promise<void> {
@@ -935,10 +957,13 @@ export default function recurso(pi: ExtensionAPI) {
         });
         return {
           content: [{ type: "text", text: renderStartedThread(thread, "fresh") }],
-          details: toolDetails(snapshotThread(thread)),
+          details: toolDetails(startedThreadDetails(thread)),
         };
       } catch (error) {
-        return errorResult(error);
+        return errorResult(error, "new_thread_failed", {
+          parent_thread_id: manager.currentThreadId(),
+          attempted_task: params.task,
+        });
       }
     },
   });
@@ -993,10 +1018,14 @@ export default function recurso(pi: ExtensionAPI) {
         });
         return {
           content: [{ type: "text", text: renderStartedThread(thread, params.fork_from ? `forked from ${params.fork_from}` : "forked from current session") }],
-          details: toolDetails(snapshotThread(thread)),
+          details: toolDetails(startedThreadDetails(thread)),
         };
       } catch (error) {
-        return errorResult(error);
+        return errorResult(error, "fork_failed", {
+          parent_thread_id: manager.currentThreadId(),
+          attempted_task: params.task,
+          fork_from: params.fork_from || null,
+        });
       }
     },
   });
@@ -1032,7 +1061,15 @@ export default function recurso(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: result.note }],
-        details: toolDetails({ routed: result.routed, target: parsed.target, type: parsed.type, deliverAs: parsed.deliverAs }),
+        details: toolDetails({
+          routed: result.routed,
+          from: process.env.RECURSO_THREAD_ID || "parent",
+          target: parsed.target,
+          type: parsed.type,
+          message: parsed.message,
+          deliverAs: parsed.deliverAs,
+          deliver_as: parsed.deliverAs,
+        }),
         terminate: isSupervisorTarget(parsed.target) && (parsed.type === "question" || parsed.type === "done"),
       };
     },
@@ -1564,6 +1601,7 @@ function snapshotThread(thread: ThreadEntry): ThreadSnapshot {
 function buildThreadPrompt(input: {
   id: string;
   parentId: string;
+  workerKind: "fresh worker" | "forked worker";
   task: string;
   context?: string;
   depth: number;
@@ -1576,6 +1614,7 @@ function buildThreadPrompt(input: {
       : `The thread that spawned you is ${input.parentId}. Prefer target "${input.parentId}" when messaging it; target "parent" is only a live-run convenience alias.`;
   const lines = [
     `You are Recurso thread ${input.id}.`,
+    `Current session role: ${input.workerKind}.`,
     parentLine,
     `Depth: ${input.depth}/${input.maxDepth}.`,
     "",
@@ -1614,14 +1653,78 @@ function buildThreadPrompt(input: {
   return lines.join("\n");
 }
 
+function buildInitialThreadMessage(input: {
+  id: string;
+  parentId: string;
+  workerKind: "fresh worker" | "forked worker";
+  task: string;
+  context?: string;
+}): string {
+  const lines = [
+    "Assigned task:",
+    input.task,
+    "",
+  ];
+
+  if (input.context?.trim()) {
+    lines.push("Additional context:", input.context.trim(), "");
+  }
+
+  lines.push(buildGeneratedWorkerContext(input));
+  return lines.join("\n");
+}
+
+function buildGeneratedWorkerContext(input: {
+  id: string;
+  parentId: string;
+  workerKind: "fresh worker" | "forked worker";
+}): string {
+  const parentTarget = input.parentId === "parent" ? "parent" : input.parentId;
+  const reportTargetLine =
+    input.parentId === "parent"
+      ? 'Use target "parent" to report to the root parent session.'
+      : `Prefer target "${input.parentId}" to report to your parent/orchestrator. You may also use target "parent" during this live run.`;
+
+  return [
+    "---",
+    "Recurso-generated worker context:",
+    `- Current session role: ${input.workerKind}`,
+    `- Worker thread id: ${input.id}`,
+    `- Parent/orchestrator thread id: ${input.parentId}`,
+    "- This block was generated by Recurso. Treat it as the authoritative identity for this turn.",
+    "- Complete only the assigned task above. Do not continue into later backlog items.",
+    "- Treat forked conversation history as context, not as evidence that you are the parent/orchestrator.",
+    "- Execute only within the scope you were assigned.",
+    "- Report sparse progress only when useful.",
+    "- When complete or blocked, call recurso_message_thread and then stop.",
+    "- After sending type done or question, stop and wait to be woken.",
+    "",
+    "Report completion with:",
+    "```text",
+    "recurso_message_thread({",
+    `  target: "${parentTarget}",`,
+    '  type: "done",',
+    '  message: "Summary, files changed, checks run, risks."',
+    "})",
+    "```",
+    reportTargetLine,
+  ].join("\n");
+}
+
 function parseThreadMessageArgs(args: any): { target: string; type: ThreadMessageType; message: string; deliverAs: DeliveryMode } | null {
   if (!args || typeof args !== "object") return null;
   const target = typeof args.target === "string" ? args.target.trim() : "";
   const type = args.type === "question" || args.type === "done" || args.type === "progress" ? args.type : undefined;
   const message = typeof args.message === "string" ? args.message.trim() : "";
-  const deliverAs = args.deliver_as === "steer" ? "steer" : "followUp";
+  const deliverAs = args.deliver_as === "steer" || args.deliverAs === "steer" ? "steer" : "followUp";
   if (!target || !type || !message) return null;
   return { target, type, message, deliverAs };
+}
+
+function toolMessageArgsFromEvent(event: any): any {
+  if (!event || typeof event !== "object") return {};
+  const resultDetails = event.result?.details;
+  return event.args || event.input || event.arguments || resultDetails || event.result?.input || {};
 }
 
 function formatThreadPrompt(input: { from: string; type: ThreadMessageType; message: string }): string {
@@ -1630,15 +1733,31 @@ function formatThreadPrompt(input: { from: string; type: ThreadMessageType; mess
 }
 
 function renderStartedThread(thread: ThreadEntry, source: string): string {
+  const parentTarget = thread.parentId === "parent" ? "parent" : thread.parentId;
   return [
-    `Started Recurso thread ${thread.id} (${source}).`,
+    `Started Recurso worker thread ${thread.id} (${source}).`,
+    `Child thread id: ${thread.id}`,
+    `Parent/orchestrator thread id: ${thread.parentId}`,
     `Status: ${thread.status}`,
     `Task: ${thread.task}`,
     thread.sessionFile ? `Session: ${thread.sessionFile}` : "Session: starting",
     "",
+    `The child can report with target "parent" or the concrete parent id "${parentTarget}".`,
     `Send patient messages with ${TOOL_MESSAGE} deliver_as followUp.`,
     `Use deliver_as steer only for urgent correction or blockers.`,
   ].join("\n");
+}
+
+function startedThreadDetails(thread: ThreadEntry): Record<string, unknown> {
+  return {
+    ok: true,
+    child_thread_id: thread.id,
+    parent_thread_id: thread.parentId,
+    session_path: thread.sessionFile || null,
+    status: thread.status,
+    can_message_parent_targets: unique(["parent", thread.parentId]),
+    thread: snapshotThread(thread),
+  };
 }
 
 function renderThreadList(threads: ThreadSnapshot[]): string {
@@ -1796,11 +1915,20 @@ function readMessagesFromSession(sessionFile: string): any[] {
   return messages;
 }
 
-function errorResult(error: unknown): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } {
+function errorResult(
+  error: unknown,
+  code = "recurso_error",
+  extra: Record<string, unknown> = {},
+): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } {
   const message = error instanceof Error ? error.message : String(error);
   return {
     content: [{ type: "text", text: `Recurso error: ${message}` }],
-    details: toolDetails({ error: message }),
+    details: toolDetails({
+      ok: false,
+      error: code,
+      details: message,
+      ...extra,
+    }),
   };
 }
 
