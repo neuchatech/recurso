@@ -54,7 +54,7 @@ Give each spawned thread:
 - Expected deliverable.
 - Constraints and coordination risks.
 - The expected report shape: `recurso_message_thread` with `type: "done"` or
-  `type: "question"`, then stop.
+  `type: "question"`, then one brief acknowledgement after the tool result.
 - Prefer the concrete parent thread id injected into the worker prompt. Use
   `target: "parent"` only when the injected prompt says the parent is the root
   parent session or no concrete id is available.
@@ -68,6 +68,6 @@ from that thread with a continuation task.
 ## Wake-Up Contract
 
 Threads that send `question` or `done` to their spawning thread should stop
-after that tool call. The spawning thread can wake an idle thread later by
+working after one brief acknowledgement. The spawning thread can wake an idle thread later by
 sending `recurso_message_thread` to its thread id. Use `followUp` by default
 and `steer` only when a thread is actively heading in the wrong direction.

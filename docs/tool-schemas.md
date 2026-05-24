@@ -4,7 +4,7 @@ Recurso v1 exposes six namespaced Pi tools. Tool details include:
 
 ```json
 {
-  "recursoApiVersion": "1.1.6",
+  "recursoApiVersion": "1.1.7",
   "schemaVersion": 1
 }
 ```
@@ -34,8 +34,8 @@ Recurso thread.
 
 The spawned worker's initial message ends with a Recurso-generated worker
 context footer: worker thread id, parent/orchestrator thread id, whether it is
-a fresh or forked worker, report-back instructions, and stop-after-`done` /
-stop-after-`question` rules. Orchestrators should pass the task itself rather
+a fresh or forked worker, report-back instructions, and post-report wait rules.
+Orchestrators should pass the task itself rather
 than writing identity boilerplate into the tool call.
 
 Parameters:
@@ -56,8 +56,9 @@ Parameters:
 - `message` string, required: self-contained message.
 - `deliver_as` enum, optional: `followUp` or `steer`; defaults to `followUp`.
 
-`question` and `done` messages to the spawning thread ask the sender to stop
-after the tool call. The process remains alive and can be woken later.
+After `question` and `done` message tool results to the spawning thread, the
+sender should reply with one brief acknowledgement and stop working. The process
+remains alive and can be woken later.
 
 Supervisor managers route Recurso message tool calls from child RPC events.
 Routing is attempted from both tool-start arguments and tool-end result details

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.7 - 2026-05-24
+
+Message result clarity release.
+
+- `recurso_message_thread` tool results now show the routed message body,
+  delivery status, and whether the target was directly reached.
+- Worker guidance now asks workers to produce one brief acknowledgement after a
+  `done` or `question` tool result before waiting, avoiding incomplete Pi turns.
+
 ## 1.1.6 - 2026-05-24
 
 Incomplete turn recovery release.

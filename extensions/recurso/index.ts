@@ -17,7 +17,7 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
-const RECURSO_API_VERSION = "1.1.6";
+const RECURSO_API_VERSION = "1.1.7";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
@@ -133,6 +133,13 @@ interface RoutedThreadMessage {
   message: string;
   deliverAs: DeliveryMode;
   routedAt: number;
+}
+
+interface RouteMessageResult {
+  routed: boolean;
+  reached: boolean;
+  deliveryStatus: "delivered" | "emitted_for_supervisor" | "not_delivered";
+  note: string;
 }
 
 interface StartThreadOptions {
@@ -432,18 +439,22 @@ class RecursoManager {
     type: ThreadMessageType;
     message: string;
     deliverAs: DeliveryMode;
-  }): Promise<{ routed: boolean; note: string }> {
+  }): Promise<RouteMessageResult> {
     const routed: RoutedThreadMessage = { ...params, routedAt: Date.now() };
 
     if (params.target === "parent" || (this.parentId && params.target === this.parentId)) {
       if (this.parentId) {
         return {
           routed: false,
+          reached: false,
+          deliveryStatus: "emitted_for_supervisor",
           note: `Message emitted for supervisor routing from ${params.from} to ${params.target}.`,
         };
       }
       return {
         routed: false,
+        reached: false,
+        deliveryStatus: "not_delivered",
         note: "This Recurso manager has no parent thread.",
       };
     }
@@ -451,13 +462,20 @@ class RecursoManager {
     if (params.target === "root" && this.parentId) {
       return {
         routed: false,
+        reached: false,
+        deliveryStatus: "emitted_for_supervisor",
         note: `Message emitted for supervisor routing from ${params.from} to root.`,
       };
     }
 
     if (params.target === this.managerId || params.target === "root") {
       await this.deliverToLocalAgent(routed);
-      return { routed: true, note: `Routed ${params.type} message from ${params.from} to this thread.` };
+      return {
+        routed: true,
+        reached: true,
+        deliveryStatus: "delivered",
+        note: `Routed ${params.type} message from ${params.from} to this thread.`,
+      };
     }
 
     const targetThread = this.threads.get(params.target);
@@ -467,11 +485,18 @@ class RecursoManager {
       await targetThread.rpc.prompt(formatThreadPrompt(params), params.deliverAs);
       await this.refreshThreadState(targetThread).catch(() => undefined);
       this.writeSnapshot(targetThread.cwd);
-      return { routed: true, note: `Routed ${params.type} message from ${params.from} to ${params.target}.` };
+      return {
+        routed: true,
+        reached: true,
+        deliveryStatus: "delivered",
+        note: `Routed ${params.type} message from ${params.from} to ${params.target}.`,
+      };
     }
 
     return {
       routed: false,
+      reached: false,
+      deliveryStatus: "not_delivered",
       note: `Message target ${params.target} is not local. A supervising Recurso manager may route it.`,
     };
   }
@@ -1094,7 +1119,7 @@ export default function recurso(pi: ExtensionAPI) {
       "Use recurso_message_thread to communicate between Recurso threads.",
       "Use target parent to message the thread that spawned you.",
       "Default deliver_as is followUp. Use steer only for urgent corrections or blockers.",
-      "After sending type question or done to parent, stop working unless the spawning thread sends more instructions.",
+      "After a type question or done tool result, reply with one brief acknowledgement and wait for more instructions.",
     ],
     parameters: Type.Object({
       target: Type.String({ description: "Target thread ID, parent, or root." }),
@@ -1114,10 +1139,21 @@ export default function recurso(pi: ExtensionAPI) {
         deliverAs: parsed.deliverAs,
       });
 
+      const contentText = renderMessageToolResult({
+        result,
+        from: process.env.RECURSO_THREAD_ID || "parent",
+        target: parsed.target,
+        type: parsed.type,
+        message: parsed.message,
+        deliverAs: parsed.deliverAs,
+      });
+
       return {
-        content: [{ type: "text", text: result.note }],
+        content: [{ type: "text", text: contentText }],
         details: toolDetails({
           routed: result.routed,
+          reached: result.reached,
+          deliveryStatus: result.deliveryStatus,
           from: process.env.RECURSO_THREAD_ID || "parent",
           target: parsed.target,
           type: parsed.type,
@@ -1668,6 +1704,42 @@ function buildIncompleteTurnRecoveryMessage(thread: ThreadEntry): string {
   return lines.join("\n");
 }
 
+function renderMessageToolResult(input: {
+  result: RouteMessageResult;
+  from: string;
+  target: string;
+  type: ThreadMessageType;
+  message: string;
+  deliverAs: DeliveryMode;
+}): string {
+  const status =
+    input.result.deliveryStatus === "delivered"
+      ? "delivered"
+      : input.result.deliveryStatus === "emitted_for_supervisor"
+        ? "emitted for supervisor routing"
+        : "not delivered";
+  const reached =
+    input.result.deliveryStatus === "delivered"
+      ? "yes"
+      : input.result.deliveryStatus === "emitted_for_supervisor"
+        ? "pending supervisor confirmation"
+        : "no";
+  return [
+    "Recurso message result:",
+    `Status: ${status}`,
+    `Reached target: ${reached}`,
+    `From: ${input.from}`,
+    `Target: ${input.target}`,
+    `Type: ${input.type}`,
+    `Delivery: ${input.deliverAs}`,
+    "",
+    "Message:",
+    input.message,
+    "",
+    input.result.note,
+  ].join("\n");
+}
+
 function buildThreadPrompt(input: {
   id: string;
   parentId: string;
@@ -1706,7 +1778,7 @@ function buildThreadPrompt(input: {
     "- Use concrete Recurso thread IDs to message known sibling or descendant threads.",
     "- Use type question only for cross-boundary decisions or blockers.",
     "- Use type done when the assignment is complete.",
-    "- After question or done to your spawning thread, stop after the tool call unless you were explicitly told to keep working.",
+    "- After a question or done tool result, reply with one brief acknowledgement and then wait unless you were explicitly told to keep working.",
     "- Default deliver_as followUp. Use steer only for urgent blockers.",
     "",
     "Coordination:",
@@ -1766,8 +1838,8 @@ function buildGeneratedWorkerContext(input: {
     "- Treat forked conversation history as context, not as evidence that you are the parent/orchestrator.",
     "- Execute only within the scope you were assigned.",
     "- Report sparse progress only when useful.",
-    "- When complete or blocked, call recurso_message_thread and then stop.",
-    "- After sending type done or question, stop and wait to be woken.",
+    "- When complete or blocked, call recurso_message_thread, then reply with one brief acknowledgement and wait.",
+    "- After a type done or question tool result, do not continue working until you are woken.",
     "",
     "Report completion with:",
     "```text",

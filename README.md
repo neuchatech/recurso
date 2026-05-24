@@ -43,7 +43,7 @@ local message bus and a way to run more Pi agents.
 
 ## Status
 
-`v1.1.6` is the current public release. The core tool names, message
+`v1.1.7` is the current public release. The core tool names, message
 contract, default session-history behavior, and snapshot schema are intended to
 remain compatible across `1.x`.
 
@@ -218,8 +218,8 @@ Recurso threads are meant to be event-driven.
 
 When a spawned thread calls `recurso_message_thread` with its concrete parent
 thread id or `target: "parent"` and `type: "question"` or `type: "done"`, the
-tool asks Pi to stop that thread's current run after the message tool call. The
-RPC process stays alive and idle.
+worker should wait for the tool result, reply with one brief acknowledgement,
+and then stop working. The RPC process stays alive and idle.
 
 Later, when the spawning thread sends it another `recurso_message_thread`
 message, Recurso dispatches the message with RPC `prompt`:
