@@ -36,6 +36,7 @@
     "check": "node scripts/recurso-smoke.mjs --static",
     "check:pi": "node scripts/recurso-smoke.mjs --offline-pi",
     "check:live": "node scripts/recurso-smoke.mjs --live",
+    "explore:provider-cache": "node scripts/provider-cache-probe.mjs",
     "pack:local": "npm pack --pack-destination /tmp"
   },
   "pi": {
