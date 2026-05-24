@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.8 - 2026-05-24
+
+Native dormant routing release.
+
+- Recurso now records each manager's Pi session file in run snapshots.
+- Child threads receive their parent Pi session path through the Recurso runtime
+  environment.
+- Messages to non-live Recurso thread ids now reopen the target Pi session in
+  RPC mode and deliver the message natively instead of depending on a live
+  supervisor process.
+
 ## 1.1.7 - 2026-05-24
 
 Message result clarity release.

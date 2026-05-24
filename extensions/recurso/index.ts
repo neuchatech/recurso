@@ -17,7 +17,7 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
-const RECURSO_API_VERSION = "1.1.7";
+const RECURSO_API_VERSION = "1.1.8";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
@@ -120,6 +120,9 @@ interface RunSnapshot {
   parentId?: string | null;
   runId?: string;
   managerPid?: number;
+  managerSessionFile?: string;
+  managerSessionId?: string;
+  managerSessionName?: string;
   depth?: number;
   packageRoot?: string;
   updatedAt?: number;
@@ -138,7 +141,7 @@ interface RoutedThreadMessage {
 interface RouteMessageResult {
   routed: boolean;
   reached: boolean;
-  deliveryStatus: "delivered" | "emitted_for_supervisor" | "not_delivered";
+  deliveryStatus: "delivered" | "not_delivered";
   note: string;
 }
 
@@ -368,6 +371,10 @@ class RecursoManager {
   private threads = new Map<string, ThreadEntry>();
   private routedMessageToolCalls = new Set<string>();
   private baseCwd: string | undefined;
+  private ownSessionFile = process.env.RECURSO_SESSION_FILE || "";
+  private ownSessionId = "";
+  private ownSessionName = "";
+  private readonly parentSessionFile = process.env.RECURSO_PARENT_SESSION_FILE || "";
   private readonly managerId = process.env.RECURSO_THREAD_ID || "parent";
   private readonly parentId = process.env.RECURSO_PARENT_THREAD_ID || "";
   private readonly runId = process.env.RECURSO_RUN_ID || `${safeName(this.managerId)}-${process.pid}`;
@@ -389,6 +396,16 @@ class RecursoManager {
     ensureDir(this.promptsDir(cwd));
     ensureDir(this.runsDir(cwd));
     this.writeSnapshot(cwd);
+  }
+
+  setSessionContext(ctx: any): void {
+    const sessionFile = currentSessionFile(ctx);
+    if (sessionFile) this.ownSessionFile = sessionFile;
+    const sessionId = currentSessionId(ctx);
+    if (sessionId) this.ownSessionId = sessionId;
+    const sessionName = currentSessionName(ctx);
+    if (sessionName) this.ownSessionName = sessionName;
+    if (this.baseCwd) this.writeSnapshot(this.baseCwd);
   }
 
   setBootstrapChildren(value: boolean): void {
@@ -444,11 +461,13 @@ class RecursoManager {
 
     if (params.target === "parent" || (this.parentId && params.target === this.parentId)) {
       if (this.parentId) {
+        const parent = await this.deliverToResolvableThread(this.parentId, routed, "parent");
+        if (parent) return parent;
         return {
           routed: false,
           reached: false,
-          deliveryStatus: "emitted_for_supervisor",
-          note: `Message emitted for supervisor routing from ${params.from} to ${params.target}.`,
+          deliveryStatus: "not_delivered",
+          note: `Parent thread ${this.parentId} could not be found or resumed for routing.`,
         };
       }
       return {
@@ -460,11 +479,13 @@ class RecursoManager {
     }
 
     if (params.target === "root" && this.parentId) {
+      const root = await this.deliverToResolvableThread("parent", routed, "root");
+      if (root) return root;
       return {
         routed: false,
         reached: false,
-        deliveryStatus: "emitted_for_supervisor",
-        note: `Message emitted for supervisor routing from ${params.from} to root.`,
+        deliveryStatus: "not_delivered",
+        note: `Root parent thread could not be found or resumed for routing.`,
       };
     }
 
@@ -493,11 +514,14 @@ class RecursoManager {
       };
     }
 
+    const resumed = await this.deliverToResolvableThread(params.target, routed);
+    if (resumed) return resumed;
+
     return {
       routed: false,
       reached: false,
       deliveryStatus: "not_delivered",
-      note: `Message target ${params.target} is not local. A supervising Recurso manager may route it.`,
+      note: `Message target ${params.target} was not found in live threads or Recurso run snapshots.`,
     };
   }
 
@@ -613,12 +637,14 @@ class RecursoManager {
     fs.writeFileSync(promptFile, prompt, "utf8");
 
     const args = this.buildChildArgs(cwd, promptFile, options);
+    const parentSessionFile = currentSessionFile(options.ctx) || this.ownSessionFile;
     const rpc = new RpcProcess(args, {
       cwd,
       env: {
         ...process.env,
         RECURSO_THREAD_ID: id,
         RECURSO_PARENT_THREAD_ID: this.managerId,
+        RECURSO_PARENT_SESSION_FILE: parentSessionFile,
         RECURSO_RUN_ID: this.runId,
         RECURSO_DEPTH: String(childDepth),
       },
@@ -729,6 +755,21 @@ class RecursoManager {
     return args;
   }
 
+  private buildResumeArgs(sessionFile: string): string[] {
+    const args = [
+      "--mode",
+      "rpc",
+      "--session",
+      sessionFile,
+    ];
+
+    if (this.bootstrapChildren) {
+      args.push("--no-extensions", "--extension", EXTENSION_FILE);
+    }
+
+    return args;
+  }
+
   private async handleThreadEvent(threadId: string, event: any): Promise<void> {
     const thread = this.threads.get(threadId);
     if (!thread) return;
@@ -824,13 +865,25 @@ class RecursoManager {
     if (parsed.type === "done") fromThread.status = "done";
 
     if (parsed.target === "parent" || parsed.target === this.managerId || parsed.target === "root") {
-      await this.deliverToLocalAgent(fromThread.lastMessage);
+      if (parsed.target === "parent" && this.parentId && this.parentId !== this.managerId) {
+        const delivered = await this.deliverToResolvableThread(this.parentId, fromThread.lastMessage, "parent");
+        if (!delivered) {
+          throw new Error(`Parent thread ${this.parentId} could not be found or resumed for routing.`);
+        }
+      } else {
+        await this.deliverToLocalAgent(fromThread.lastMessage);
+      }
       if (toolCallId) this.routedMessageToolCalls.add(toolCallId);
       return;
     }
 
     const target = this.threads.get(parsed.target);
-    if (!target || isDead(target)) return;
+    if (!target || isDead(target)) {
+      const delivered = await this.deliverToResolvableThread(parsed.target, fromThread.lastMessage);
+      if (!delivered) return;
+      if (toolCallId) this.routedMessageToolCalls.add(toolCallId);
+      return;
+    }
 
     await target.rpc.prompt(
       formatThreadPrompt({
@@ -857,6 +910,146 @@ class RecursoManager {
         const modeText = errorWithMode instanceof Error ? errorWithMode.message : String(errorWithMode);
         throw new Error(`${messageText}${modeText && modeText !== messageText ? ` (${modeText})` : ""}`);
       }
+    }
+  }
+
+  private async deliverToResolvableThread(
+    targetId: string,
+    message: RoutedThreadMessage,
+    displayTarget = targetId,
+  ): Promise<RouteMessageResult | undefined> {
+    const existing = this.threads.get(targetId);
+    if (existing && !isDead(existing)) {
+      await existing.rpc.prompt(formatThreadPrompt(message), message.deliverAs);
+      await this.refreshThreadState(existing).catch(() => undefined);
+      existing.lastMessage = message;
+      existing.updatedAt = Date.now();
+      this.writeSnapshot(existing.cwd);
+      return {
+        routed: true,
+        reached: true,
+        deliveryStatus: "delivered",
+        note: `Routed ${message.type} message from ${message.from} to ${displayTarget}.`,
+      };
+    }
+
+    const sessionFile = this.resolveThreadSessionFile(targetId);
+    if (!sessionFile) return undefined;
+
+    const thread = await this.resumeSessionThread(targetId, sessionFile);
+    await thread.rpc.prompt(formatThreadPrompt(message), message.deliverAs);
+    await this.refreshThreadState(thread).catch(() => undefined);
+    thread.lastMessage = message;
+    thread.updatedAt = Date.now();
+    this.writeSnapshot(thread.cwd);
+    return {
+      routed: true,
+      reached: true,
+      deliveryStatus: "delivered",
+      note: `Resumed Pi session for ${displayTarget} and routed ${message.type} message from ${message.from}.`,
+    };
+  }
+
+  private resolveThreadSessionFile(targetId: string): string | undefined {
+    if ((targetId === "parent" || targetId === this.parentId) && this.parentSessionFile) {
+      return this.parentSessionFile;
+    }
+    if (targetId === this.managerId && this.ownSessionFile) {
+      return this.ownSessionFile;
+    }
+    if (!this.baseCwd) return undefined;
+
+    for (const snapshot of this.readRunSnapshots(this.baseCwd)) {
+      if (snapshot.managerId === targetId && snapshot.managerSessionFile) {
+        return snapshot.managerSessionFile;
+      }
+      for (const thread of snapshot.threads || []) {
+        if (thread.id === targetId && thread.sessionFile) {
+          return thread.sessionFile;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private resolveThreadParentId(targetId: string): string | undefined {
+    if (targetId === "parent") return "";
+    if (!this.baseCwd) return undefined;
+    for (const snapshot of this.readRunSnapshots(this.baseCwd)) {
+      if (snapshot.managerId === targetId) return snapshot.parentId || "";
+      for (const thread of snapshot.threads || []) {
+        if (thread.id === targetId) return thread.parentId;
+      }
+    }
+    return undefined;
+  }
+
+  private async resumeSessionThread(threadId: string, sessionFile: string): Promise<ThreadEntry> {
+    const existing = this.threads.get(threadId);
+    if (existing && !isDead(existing)) return existing;
+    if (!fs.existsSync(sessionFile)) throw new Error(`Session file for ${threadId} does not exist: ${sessionFile}`);
+
+    const cwd = this.baseCwd || process.cwd();
+    const args = this.buildResumeArgs(sessionFile);
+    const parentId = this.resolveThreadParentId(threadId) ?? (threadId === "parent" ? "" : this.parentId);
+    const rpc = new RpcProcess(args, {
+      cwd,
+      env: {
+        ...process.env,
+        RECURSO_THREAD_ID: threadId,
+        RECURSO_PARENT_THREAD_ID: parentId,
+        RECURSO_PARENT_SESSION_FILE: parentId === this.parentId ? this.parentSessionFile : "",
+        RECURSO_RUN_ID: this.runId,
+        RECURSO_DEPTH: String(this.depth),
+      },
+      onEvent: (event) => {
+        void this.handleThreadEvent(threadId, event);
+      },
+      onExit: (code, signal) => {
+        this.handleThreadExit(threadId, code, signal);
+      },
+      onProtocolError: (message) => {
+        const thread = this.threads.get(threadId);
+        if (thread) {
+          thread.lastError = message;
+          thread.updatedAt = Date.now();
+          this.writeSnapshot(thread.cwd);
+        }
+      },
+    });
+
+    const thread: ThreadEntry = {
+      id: threadId,
+      parentId: parentId || "parent",
+      task: "Resumed Recurso thread",
+      cwd,
+      depth: this.depth,
+      status: "starting",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      rpc,
+      sessionFile,
+    };
+    this.threads.set(threadId, thread);
+    this.writeSnapshot(cwd);
+
+    try {
+      await rpc.start();
+      thread.pid = rpc.pid;
+      await rpc.setQueueModes();
+      applyState(thread, await rpc.getState());
+      thread.status = thread.status === "running" ? "running" : "idle";
+      thread.updatedAt = Date.now();
+      this.writeSnapshot(cwd);
+      return thread;
+    } catch (error) {
+      thread.status = "error";
+      thread.lastError = error instanceof Error ? error.message : String(error);
+      thread.finishedAt = Date.now();
+      thread.updatedAt = Date.now();
+      rpc.terminate();
+      this.writeSnapshot(cwd);
+      throw error;
     }
   }
 
@@ -971,6 +1164,9 @@ class RecursoManager {
         parentId: this.parentId || null,
         runId: this.runId,
         managerPid: process.pid,
+        managerSessionFile: this.ownSessionFile || undefined,
+        managerSessionId: this.ownSessionId || undefined,
+        managerSessionName: this.ownSessionName || undefined,
         depth: this.depth,
         packageRoot: PACKAGE_ROOT,
         updatedAt: Date.now(),
@@ -991,6 +1187,7 @@ export default function recurso(pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     manager.setCwd(ctx.cwd);
+    manager.setSessionContext(ctx);
     const ownTool = pi.getAllTools().find((tool) => tool.name === TOOL_NEW);
     manager.setBootstrapChildren(ownTool?.sourceInfo?.scope === "temporary");
   });
@@ -1621,6 +1818,24 @@ function currentSessionFile(ctx: any): string | undefined {
   }
 }
 
+function currentSessionId(ctx: any): string | undefined {
+  try {
+    const value = ctx.sessionManager?.getSessionId?.();
+    return typeof value === "string" && value ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function currentSessionName(ctx: any): string | undefined {
+  try {
+    const value = ctx.sessionManager?.getSessionName?.();
+    return typeof value === "string" && value ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function currentProvider(ctx: any): string | undefined {
   const provider = ctx?.model?.provider;
   return typeof provider === "string" && provider ? provider : undefined;
@@ -1715,15 +1930,11 @@ function renderMessageToolResult(input: {
   const status =
     input.result.deliveryStatus === "delivered"
       ? "delivered"
-      : input.result.deliveryStatus === "emitted_for_supervisor"
-        ? "emitted for supervisor routing"
-        : "not delivered";
+      : "not delivered";
   const reached =
     input.result.deliveryStatus === "delivered"
       ? "yes"
-      : input.result.deliveryStatus === "emitted_for_supervisor"
-        ? "pending supervisor confirmation"
-        : "no";
+      : "no";
   return [
     "Recurso message result:",
     `Status: ${status}`,

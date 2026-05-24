@@ -4,7 +4,7 @@ Recurso v1 exposes six namespaced Pi tools. Tool details include:
 
 ```json
 {
-  "recursoApiVersion": "1.1.7",
+  "recursoApiVersion": "1.1.8",
   "schemaVersion": 1
 }
 ```
@@ -63,6 +63,10 @@ remains alive and can be woken later.
 Supervisor managers route Recurso message tool calls from child RPC events.
 Routing is attempted from both tool-start arguments and tool-end result details
 so a worker report is not lost if one event shape is incomplete.
+
+If the target thread process is no longer live, Recurso resolves its Pi session
+file from run snapshots or the parent runtime environment, reopens that session
+in RPC mode, and sends the message with Pi's normal prompt path.
 
 ## `recurso_peek_thread`
 

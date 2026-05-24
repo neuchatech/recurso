@@ -43,7 +43,7 @@ local message bus and a way to run more Pi agents.
 
 ## Status
 
-`v1.1.7` is the current public release. The core tool names, message
+`v1.1.8` is the current public release. The core tool names, message
 contract, default session-history behavior, and snapshot schema are intended to
 remain compatible across `1.x`.
 
@@ -228,6 +228,8 @@ message, Recurso dispatches the message with RPC `prompt`:
 - if the target thread is busy, `followUp` queues it until the thread stops;
 - if the target thread needs urgent correction, `steer` queues it before the
   next model call.
+- if the target thread's old process is gone, Recurso reopens that Pi session
+  in RPC mode from the recorded session path and sends the same native prompt.
 
 `recurso_peek_thread` is for debugging, suspected malfunction, or adding context
 after a received message. It should not be used as a waiting loop. If workers
