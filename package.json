@@ -1,0 +1,46 @@
+{
+  "name": "recurso",
+  "version": "0.1.0",
+  "description": "RPC-backed thread orchestration for Pi agents.",
+  "homepage": "https://github.com/neuchatech/recurso#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/neuchatech/recurso.git"
+  },
+  "bugs": {
+    "url": "https://github.com/neuchatech/recurso/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "agent",
+    "threads",
+    "subagents",
+    "orchestration",
+    "recurso"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "extensions",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/recurso/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
