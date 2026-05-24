@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1 - 2026-05-24
+
+VS Code history and thinking-control release.
+
+- Added explicit `thinking` overrides for new and forked Recurso threads.
+- Spawned threads now inherit the parent Pi session history directory by default
+  so VS Code history can show them beside the creating session.
+- Added a session cache report helper for inspecting provider cache usage.
+
 ## 1.1.0 - 2026-05-24
 
 Provider cache exploration release.

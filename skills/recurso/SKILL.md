@@ -27,6 +27,10 @@ Use Recurso when independent work can make progress in another live Pi thread.
 
 - Fork only work with a clear deliverable.
 - Keep fan-out purposeful. Recurso's default runtime cap is 10 live threads in one run tree.
+- Spawned threads inherit the current provider, model, and thinking level unless
+  a tool call supplies `provider`, `model`, or `thinking`.
+- Use `thinking: "low"` or `thinking: "medium"` for routine worker threads, and
+  reserve `thinking: "high"` or `thinking: "xhigh"` for genuinely difficult analysis.
 - Default messages to `deliver_as: "followUp"`.
 - Use `deliver_as: "steer"` only for urgent correction, safety, or blocker handling.
 - Do not sleep or poll by default. `question` and `done` messages wake the receiving thread.

@@ -106,6 +106,15 @@ descendant thread.
 
 Recurso uses Pi's normal session history by default. That is deliberate:
 threads should be inspectable in the same place you already inspect Pi work.
+Spawned threads inherit the parent session's history directory when Recurso can
+see it, so VS Code history shows them beside the chat that created them even if
+the child thread works in a nested cwd.
+
+If you prefer Pi's cwd-derived history bucket for each spawned thread:
+
+```bash
+RECURSO_SESSION_DIR=pi-cwd pi
+```
 
 If you want isolated Recurso session files instead:
 
@@ -121,15 +130,16 @@ RECURSO_SESSION_DIR=.pi/recurso/sessions pi
 
 This setting affects threads that Recurso spawns. The current Pi session's
 history location is chosen when Pi starts, before Recurso loads. If you start a
-parent RPC process manually and want that parent to appear beside its spawned
-threads in normal Pi history, do not pass a custom parent `--session-dir`:
+parent RPC process manually and want spawned threads to appear beside it in
+normal Pi history, make sure the parent itself saves a session:
 
 ```bash
 pi -e ./recurso --mode rpc
 ```
 
 If you do pass `--session-dir` to the parent process, that parent session stays
-in the custom directory even when spawned Recurso threads use normal Pi history.
+in the custom directory and spawned Recurso threads inherit that directory by
+default.
 
 ## Tools
 
@@ -201,8 +211,8 @@ When an agent creates or forks a thread, Recurso:
 
 The process tree is only an ownership and routing detail. Every Recurso thread
 has the same Recurso tools and can create, fork, and message threads. Spawned
-threads inherit the current provider and model unless a tool call supplies
-`provider` or `model` explicitly.
+threads inherit the current provider, model, and thinking level unless a tool
+call supplies `provider`, `model`, or `thinking` explicitly.
 
 ## Skills
 
@@ -255,7 +265,7 @@ Environment variables:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `RECURSO_PI_BIN` | `pi` | Pi executable used for spawned RPC processes. |
-| `RECURSO_SESSION_DIR` | `default` | Spawned thread session storage. `default`, `pi`, `pi-default`, or `history` use Pi's normal session directory. `isolated`, `local`, or `recurso` use `.pi/recurso/sessions`. Any other value is treated as a custom path relative to the workspace cwd unless absolute. |
+| `RECURSO_SESSION_DIR` | `default` | Spawned thread session storage. `default`, `pi`, `pi-default`, or `history` inherit the parent Pi session directory when available. `cwd` or `pi-cwd` use Pi's cwd-derived history bucket. `isolated`, `local`, or `recurso` use `.pi/recurso/sessions`. Any other value is treated as a custom path relative to the workspace cwd unless absolute. |
 | `RECURSO_MAX_DEPTH` | `3` | Maximum recursive thread depth. |
 | `RECURSO_MAX_PARALLEL_THREADS` | `10` | Maximum live Recurso threads in one Recurso run tree. |
 | `RECURSO_BOOTSTRAP_CHILDREN` | auto | Set `1` to force child processes to load this extension by path; set `0` to disable. |

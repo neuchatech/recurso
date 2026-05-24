@@ -24,6 +24,10 @@ Recurso thread can create, fork, and message other threads.
 
 - Fork only work with a clear deliverable.
 - Keep fan-out purposeful. Recurso's default runtime cap is 10 live threads in one run tree.
+- Spawned threads inherit the current provider, model, and thinking level unless
+  a tool call supplies `provider`, `model`, or `thinking`.
+- Keep most workers on low or medium thinking, and explicitly raise thinking
+  only for hard architecture, debugging, or synthesis tasks.
 - Default messages to `deliver_as: "followUp"`.
 - Use `deliver_as: "steer"` only for urgent correction, safety, or blocker handling.
 - Do not sleep or poll threads by default. Recurso messages wake the receiving thread.

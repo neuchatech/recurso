@@ -27,6 +27,7 @@ const RECURSO_ISOLATED_SESSION_DIR_VALUES = new Set(["isolated", "local", "recur
 type DeliveryMode = "followUp" | "steer";
 type ThreadMessageType = "question" | "done" | "progress";
 type ThreadStatus = "starting" | "running" | "idle" | "waiting" | "done" | "aborted" | "exited" | "error";
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 interface RpcResponse {
   id?: string;
@@ -127,6 +128,7 @@ interface StartThreadOptions {
   name?: string;
   model?: string;
   provider?: string;
+  thinking?: ThinkingLevel;
   tools?: string[];
 }
 
@@ -343,7 +345,7 @@ class RecursoManager {
   setCwd(cwd: string): void {
     this.baseCwd = cwd;
     ensureDir(this.recursoDir(cwd));
-    const childSessionDir = this.childSessionDir(cwd);
+    const childSessionDir = this.configuredLocalSessionDir(cwd);
     if (childSessionDir) ensureDir(childSessionDir);
     ensureDir(this.promptsDir(cwd));
     ensureDir(this.runsDir(cwd));
@@ -626,7 +628,7 @@ class RecursoManager {
       "--append-system-prompt",
       promptFile,
     ];
-    const childSessionDir = this.childSessionDir(cwd);
+    const childSessionDir = this.childSessionDir(cwd, options);
     if (childSessionDir) {
       args.splice(2, 0, "--session-dir", childSessionDir);
     }
@@ -643,6 +645,9 @@ class RecursoManager {
     }
     if (options.model) {
       args.push("--model", options.model);
+    }
+    if (options.thinking) {
+      args.push("--thinking", options.thinking);
     }
     if (options.tools?.length) {
       args.push("--tools", unique([...options.tools, ...RECURSO_TOOLS]).join(","));
@@ -756,13 +761,24 @@ class RecursoManager {
     return path.join(cwd, ".pi", "recurso");
   }
 
-  private childSessionDir(cwd: string): string | undefined {
+  private configuredLocalSessionDir(cwd: string): string | undefined {
     const configured = process.env.RECURSO_SESSION_DIR?.trim();
     if (!configured) return undefined;
     const normalized = configured.toLowerCase();
-    if (PI_DEFAULT_SESSION_DIR_VALUES.has(normalized)) return undefined;
     if (RECURSO_ISOLATED_SESSION_DIR_VALUES.has(normalized)) return path.join(this.recursoDir(cwd), "sessions");
+    if (PI_DEFAULT_SESSION_DIR_VALUES.has(normalized) || normalized === "cwd" || normalized === "pi-cwd") return undefined;
     return path.isAbsolute(configured) ? configured : path.resolve(cwd, configured);
+  }
+
+  private childSessionDir(cwd: string, options: StartThreadOptions): string | undefined {
+    const configured = process.env.RECURSO_SESSION_DIR?.trim();
+    const normalized = configured?.toLowerCase();
+    if (normalized === "cwd" || normalized === "pi-cwd") return undefined;
+    const local = this.configuredLocalSessionDir(cwd);
+    if (local) return local;
+
+    const parentSessionFile = currentSessionFile(options.ctx);
+    return parentSessionFile ? path.dirname(parentSessionFile) : undefined;
   }
 
   private promptsDir(cwd: string): string {
@@ -875,6 +891,7 @@ export default function recurso(pi: ExtensionAPI) {
       name: Type.Optional(Type.String({ description: "Optional session display name for the thread." })),
       model: Type.Optional(Type.String({ description: "Optional Pi model pattern for the thread." })),
       provider: Type.Optional(Type.String({ description: "Optional Pi provider name for the thread." })),
+      thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"] as const)),
       tools: Type.Optional(Type.Array(Type.String(), { description: "Optional tool allowlist. Recurso tools are added automatically." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -884,6 +901,7 @@ export default function recurso(pi: ExtensionAPI) {
           ...params,
           provider: params.provider || currentProvider(ctx),
           model: params.model || currentModelId(ctx),
+          thinking: params.thinking || currentThinkingLevel(ctx),
         });
         return {
           content: [{ type: "text", text: renderStartedThread(thread, "fresh") }],
@@ -912,6 +930,7 @@ export default function recurso(pi: ExtensionAPI) {
       name: Type.Optional(Type.String({ description: "Optional session display name for the thread." })),
       model: Type.Optional(Type.String({ description: "Optional Pi model pattern for the thread." })),
       provider: Type.Optional(Type.String({ description: "Optional Pi provider name for the thread." })),
+      thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"] as const)),
       tools: Type.Optional(Type.Array(Type.String(), { description: "Optional tool allowlist. Recurso tools are added automatically." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -937,6 +956,7 @@ export default function recurso(pi: ExtensionAPI) {
           name: params.name,
           model: params.model || currentModelId(ctx),
           provider: params.provider || currentProvider(ctx),
+          thinking: params.thinking || currentThinkingLevel(ctx),
           tools: params.tools,
           sourceSessionFile,
           forkFromThread: params.fork_from,
@@ -1168,6 +1188,15 @@ function currentProvider(ctx: any): string | undefined {
 function currentModelId(ctx: any): string | undefined {
   const modelId = ctx?.model?.id;
   return typeof modelId === "string" && modelId ? modelId : undefined;
+}
+
+function currentThinkingLevel(ctx: any): ThinkingLevel | undefined {
+  const level = ctx?.model?.thinkingLevel || ctx?.thinkingLevel;
+  return isThinkingLevel(level) ? level : undefined;
+}
+
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return value === "off" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh";
 }
 
 function applyState(thread: ThreadEntry, state: RpcState): void {

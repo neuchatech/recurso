@@ -23,6 +23,8 @@ Parameters:
 - `name` string, optional: session display name.
 - `model` string, optional: Pi model pattern.
 - `provider` string, optional: Pi provider.
+- `thinking` enum, optional: `off`, `minimal`, `low`, `medium`, `high`, or
+  `xhigh`.
 - `tools` string array, optional: tool allowlist. Recurso tools are added automatically.
 
 ## `recurso_fork_thread`
@@ -34,7 +36,8 @@ Parameters:
 
 - `task` string, required.
 - `fork_from` string, optional: Recurso thread id to fork from.
-- `context`, `name`, `model`, `provider`, `tools`: same as `recurso_new_thread`.
+- `context`, `name`, `model`, `provider`, `thinking`, `tools`: same as
+  `recurso_new_thread`.
 
 ## `recurso_message_thread`
 
@@ -85,8 +88,10 @@ Parameters:
 ## Environment
 
 - `RECURSO_PI_BIN`: Pi executable. Default `pi`.
-- `RECURSO_SESSION_DIR`: `default` behavior uses Pi history. `isolated`,
-  `local`, or `recurso` use `.pi/recurso/sessions`. Any other value is a custom path.
+- `RECURSO_SESSION_DIR`: default behavior inherits the parent Pi session history
+  directory so spawned threads appear beside the session that created them.
+  `cwd` or `pi-cwd` use Pi's cwd-derived history directory. `isolated`, `local`,
+  or `recurso` use `.pi/recurso/sessions`. Any other value is a custom path.
 - `RECURSO_MAX_DEPTH`: recursive depth cap. Default `3`.
 - `RECURSO_MAX_PARALLEL_THREADS`: live threads per run tree. Default `10`.
 - `RECURSO_BOOTSTRAP_CHILDREN`: force or disable extension bootstrapping.

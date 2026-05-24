@@ -1,6 +1,6 @@
 {
   "name": "recurso",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Agent-to-agent orchestration for Pi.",
   "homepage": "https://github.com/neuchatech/recurso#readme",
   "repository": {
@@ -37,6 +37,7 @@
     "check:pi": "node scripts/recurso-smoke.mjs --offline-pi",
     "check:live": "node scripts/recurso-smoke.mjs --live",
     "explore:provider-cache": "node scripts/provider-cache-probe.mjs",
+    "cache:report": "node scripts/session-cache-report.mjs",
     "pack:local": "npm pack --pack-destination /tmp"
   },
   "pi": {
