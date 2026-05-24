@@ -19,11 +19,11 @@ Provider cache survival after a fork is not a generic capability. It depends on 
 
 | Provider path | Feature to test | Expected fork behavior | Status |
 | --- | --- | --- | --- |
-| OpenRouter + DS4 Pro pinned to DeepSeek | OpenRouter/DeepSeek cache via `openrouter-deepseek` provider | Mixed local results. Same-session continuation hits cache; fork missed in an early manual trial but hit in the unique-label probe. Needs repeated trials and request metadata capture. | In progress |
-| DeepSeek direct | Direct DeepSeek context caching | Promising. Official cache is prefix/content based, so Pi forks may hit without Pi changes if the prefix unit has settled. Needs live probe. | Researched |
-| OpenAI direct | Prompt caching, `prompt_cache_key`, Responses `previous_response_id` | Likely cache-hostile today because Pi uses the fork's new session id as `prompt_cache_key`. V2 could preserve a cache-lineage key across forks. Needs live probe. | Researched |
-| Gemini direct | Implicit caching, explicit cached content, thought signatures | Implicit prefix caching may work today. Explicit cached content needs Pi provider changes. Thought signatures are reasoning continuity, not cache economics. Needs live probe. | Researched |
-| Anthropic direct | Explicit `cache_control` breakpoints | Out of initial scope unless keys are available. Likely prefix/breakpoint dependent, not fork-aware. | Backlog |
+| OpenRouter + DS4 Pro pinned to DeepSeek | OpenRouter/DeepSeek cache via `openrouter-deepseek` provider | Works in the current repeated probe when a settle delay is used, but an earlier manual run missed. Treat as empirically supported, timing-sensitive. | `preserves-cache` |
+| DeepSeek direct | Direct DeepSeek context caching | Promising. Official cache is prefix/content based, so Pi forks may hit without Pi changes if the prefix unit has settled. Live probe is blocked by current direct DeepSeek auth/credit. | Blocked |
+| OpenAI direct | Prompt caching, `prompt_cache_key`, Responses `previous_response_id` | Same parent session hits cache, but forked session misses today. V2 should test preserving a separate cache-lineage key across forks. | `can-preserve-with-pi-changes` |
+| Gemini direct | Implicit caching, explicit cached content, thought signatures | Current implicit-cache probe produced no cache hits, including same-parent continuation. Explicit cached content likely needs Pi provider changes. | `unknown` |
+| Anthropic direct | Explicit `cache_control` breakpoints | Works today. Pi/Recurso writes a cache breakpoint in the seed request and reads it from both forked and parent continuations. | `preserves-cache` |
 
 ## Definition Of Done
 
@@ -85,6 +85,26 @@ same parent session continuation:
 ```
 
 Updated conclusion: OpenRouter DS4 fork-cache behavior is not settled by a single run. V2 should run repeated trials and capture request-shaping details, including cache key/session id, provider routing payload, system prompt shape, ordering, timing, and raw usage fields.
+
+## Current Provider Probe Results
+
+Run date: 2026-05-24.
+
+All probes used `scripts/provider-cache-probe.mjs` from this branch. Each run seeded a parent thread with a long stable corpus, waited for the provider cache to settle, then measured a fork-first continuation and a same-parent continuation.
+
+| Provider path | Model | Trials | Fork cache result | Same-parent cache result | Current Recurso verdict |
+| --- | --- | ---: | --- | --- | --- |
+| OpenRouter DS4 pinned | `deepseek/deepseek-v4-pro` | 2 | Hit: `10624`, `10880` cached tokens | Hit: `10752`, `11008` cached tokens | Fork caching works empirically with `--settle-ms 2000`; keep testing timing/routing sensitivity. |
+| OpenAI direct | `gpt-5.4-mini` | 2 | Miss: `0`, `0` cached tokens | Hit: `12544`, `12032` cached tokens | Fork caching does not work today; likely caused by fork-specific Pi session ids becoming distinct `prompt_cache_key` values. |
+| Gemini AI Studio direct | `gemini-2.5-flash` | 2 | Miss: `0`, `0` cached tokens | Miss: `0`, `0` cached tokens | Current probe does not trigger Gemini implicit caching at all; test explicit `cachedContent` next. |
+| Anthropic direct | `claude-sonnet-4-6` | 1 | Hit: `11268` cached tokens | Hit: `11268` cached tokens | Fork caching works today with Pi's Anthropic cache-control behavior. |
+
+Notes:
+
+- OpenRouter DS4 is classified as `preserves-cache` for current Recurso, but with a caveat: earlier manual testing missed on the fork. V2 should sweep settle delay, corpus size, and provider routing.
+- OpenAI is the cleanest failure mode: same-parent cache works while fork cache misses. This strongly suggests a Pi-level cache-lineage patch can help.
+- Gemini is not yet a fork-specific failure. It first needs either a probe shape that triggers implicit caching or a Pi provider patch for explicit cached content.
+- Anthropic's dashboard can show prompt caching as "not enabled" before visible cache activity, but the API counters confirm cache creation and reads in this probe.
 
 ## Workstreams
 
