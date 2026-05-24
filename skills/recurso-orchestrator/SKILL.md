@@ -16,7 +16,7 @@ Recurso thread can create, fork, and message other threads.
 - `recurso_new_thread`: start a fresh thread without parent conversation context.
 - `recurso_fork_thread`: fork the current session, or an existing Recurso thread.
 - `recurso_message_thread`: send a follow-up or steering message to a thread.
-- `recurso_peek_thread`: inspect a thread when you need context for a decision.
+- `recurso_peek_thread`: inspect a thread for debugging or after a received message needs more context.
 - `recurso_list_threads`: check live thread inventory.
 - `recurso_abort_thread`: abort a turn or terminate a thread.
 
@@ -31,11 +31,12 @@ Recurso thread can create, fork, and message other threads.
 - Default messages to `deliver_as: "followUp"`.
 - Use `deliver_as: "steer"` only for urgent correction, safety, or blocker handling.
 - Do not sleep or poll threads by default. Recurso messages wake the receiving thread.
-- Poll or peek only when there is a concrete reason: diagnosis, progress audit,
-  time-sensitive coordination, or a thread question that needs more context.
-- After spawning threads, continue useful local work or stop and wait for their queued messages.
+- After spawning threads, continue useful local work or stop and wait for their
+  queued messages. Do not repeatedly peek just to see if workers are done.
+- Use `recurso_peek_thread` only for debugging, suspected malfunction, or when a
+  received thread message needs more context.
 - Let threads report with `recurso_message_thread` using `question`, `progress`, or `done`.
-- Use `recurso_peek_thread` when a thread asks a question and you need context.
+- Use `recurso_peek_thread` only when a thread asks a question and you need context.
 - Integrate thread reports before deciding next steps.
 - When a thread is obsolete or harmful, use `recurso_abort_thread`.
 

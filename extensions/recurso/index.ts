@@ -16,7 +16,7 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
-const RECURSO_API_VERSION = "1.1.2";
+const RECURSO_API_VERSION = "1.1.3";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
@@ -930,7 +930,7 @@ export default function recurso(pi: ExtensionAPI) {
     promptGuidelines: [
       "Use recurso_fork_thread when the new thread needs the current conversation context.",
       "Use fork_from to branch from a previous Recurso thread's session.",
-      "Do not routinely poll forked threads. They should report via recurso_message_thread.",
+      "Do not poll forked threads while waiting. They should report via recurso_message_thread.",
     ],
     parameters: Type.Object({
       task: Type.String({ description: "Thread assignment and expected deliverable." }),
@@ -1020,11 +1020,13 @@ export default function recurso(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL_PEEK,
     label: "Recurso Peek Thread",
-    description: "Inspect a Recurso thread without sending it a message.",
-    promptSnippet: "Inspect a Recurso thread when needed for a decision",
+    description: "Inspect a Recurso thread for debugging or when a received message needs more context. Do not use this as a waiting loop.",
+    promptSnippet: "Debug or inspect a Recurso thread when needed",
     promptGuidelines: [
-      "Use recurso_peek_thread only when you need context for a decision or suspect a thread is blocked.",
-      "Prefer compact mode first.",
+      "Do not use recurso_peek_thread just to check whether a worker is done.",
+      "While waiting, stop and let recurso_message_thread wake you.",
+      "Use recurso_peek_thread only when you suspect a thread is blocked, need diagnosis, or need context for a received message.",
+      "Prefer compact mode first when peeking is necessary.",
     ],
     parameters: Type.Object({
       thread_id: Type.String({ description: "Thread ID to inspect." }),

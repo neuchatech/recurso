@@ -19,7 +19,7 @@ Use Recurso when independent work can make progress in another live Pi thread.
 - `recurso_new_thread`: start a fresh thread without current conversation history.
 - `recurso_fork_thread`: fork the current session, or an existing Recurso thread.
 - `recurso_message_thread`: send a follow-up or steering message to a thread.
-- `recurso_peek_thread`: inspect a thread when you need context for a decision.
+- `recurso_peek_thread`: inspect a thread for debugging or after a received message needs more context.
 - `recurso_list_threads`: check live thread inventory for this manager.
 - `recurso_abort_thread`: abort a turn or terminate a thread.
 
@@ -33,9 +33,12 @@ Use Recurso when independent work can make progress in another live Pi thread.
   reserve `thinking: "high"` or `thinking: "xhigh"` for genuinely difficult analysis.
 - Default messages to `deliver_as: "followUp"`.
 - Use `deliver_as: "steer"` only for urgent correction, safety, or blocker handling.
-- Do not sleep or poll by default. `question` and `done` messages wake the receiving thread.
-- Poll or peek only when there is a concrete reason: diagnosis, progress audit,
-  time-sensitive coordination, or a message that needs more context.
+- After spawning workers, do not watch them with repeated `recurso_peek_thread`
+  calls. Either do useful local work or stop and wait for their queued messages.
+- `question` and `done` messages wake the receiving thread; this is the normal
+  coordination mechanism.
+- Use `recurso_peek_thread` only for debugging, suspected malfunction, or when a
+  received message requires more context. Do not peek just to see if a worker is done.
 - Any thread may create, fork, or message other threads when that helps the assignment.
 - After sending `question` or `done` to the spawning thread, stop unless explicitly
   instructed to continue.

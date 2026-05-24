@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.3 - 2026-05-24
+
+Orchestration guidance release.
+
+- Tightened skill and tool guidance so parent agents stop waiting on workers
+  instead of repeatedly peeking at them.
+- Reframed `recurso_peek_thread` as a debugging/context tool, not a normal
+  waiting loop.
+
 ## 1.1.2 - 2026-05-24
 
 Worker lifetime release.

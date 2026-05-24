@@ -4,7 +4,7 @@ Recurso v1 exposes six namespaced Pi tools. Tool details include:
 
 ```json
 {
-  "recursoApiVersion": "1.1.2",
+  "recursoApiVersion": "1.1.3",
   "schemaVersion": 1
 }
 ```

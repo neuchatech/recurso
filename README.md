@@ -39,7 +39,7 @@ local message bus and a way to run more Pi agents.
 
 ## Status
 
-`v1.1.2` is the current public release. The core tool names, message
+`v1.1.3` is the current public release. The core tool names, message
 contract, default session-history behavior, and snapshot schema are intended to
 remain compatible across `1.x`.
 
@@ -189,9 +189,10 @@ message, Recurso dispatches the message with RPC `prompt`:
 - if the target thread needs urgent correction, `steer` queues it before the
   next model call.
 
-Polling and `recurso_peek_thread` remain useful for diagnosis, progress audits,
-time-sensitive coordination, or when a message needs more context. They should
-not be the default coordination loop.
+`recurso_peek_thread` is for debugging, suspected malfunction, or adding context
+after a received message. It should not be used as a waiting loop. If workers
+are still running, the parent should do useful local work or stop and let worker
+messages wake it.
 
 ## How It Works
 
