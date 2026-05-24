@@ -10,6 +10,8 @@ from the current thread.
 
 This is a coordination role, not a special type of Recurso thread. Every
 Recurso thread can create, fork, and message other threads.
+`parent` is a live-run convenience alias; concrete thread IDs are preferred
+when a thread prompt provides them.
 
 ## Tools
 
@@ -48,7 +50,9 @@ Give each spawned thread:
 - Read and write scope.
 - Expected deliverable.
 - Constraints and coordination risks.
-- Instruction to report `question`, `progress`, or `done` to `target: "parent"` unless another target is more precise.
+- The exact target for reports. Prefer the concrete parent thread id when known;
+  use `target: "parent"` only when the parent is the root parent session or no
+  concrete id is available.
 
 ## Completion Handling
 
@@ -58,7 +62,7 @@ from that thread with a continuation task.
 
 ## Wake-Up Contract
 
-Threads that send `question` or `done` to `target: "parent"` should stop after
-that tool call. The spawning thread can wake an idle thread later by sending
-`recurso_message_thread` to its thread id. Use `followUp` by default and
-`steer` only when a thread is actively heading in the wrong direction.
+Threads that send `question` or `done` to their spawning thread should stop
+after that tool call. The spawning thread can wake an idle thread later by
+sending `recurso_message_thread` to its thread id. Use `followUp` by default
+and `steer` only when a thread is actively heading in the wrong direction.

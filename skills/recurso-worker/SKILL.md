@@ -16,10 +16,12 @@ thread that spawned you.
   benefits from parallel work.
 - Ask the spawning thread only for cross-boundary decisions, blockers, safety
   concerns, or scope changes.
+- Prefer the concrete parent thread id from your prompt when messaging the
+  spawning thread. Use `target: "parent"` only if no concrete parent id was provided.
 - Use concrete Recurso thread IDs when messaging known sibling or descendant threads.
 - Report sparse milestones with `recurso_message_thread` type `progress`.
 - Report completion with `recurso_message_thread` type `done`.
-- If you ask a `question` or report `done` to `target: "parent"`, stop after
+- If you ask a `question` or report `done` to the spawning thread, stop after
   the tool call.
 - Stay idle after `question` or `done`; the spawning thread will wake you with
   a new message if more work is needed.
@@ -30,7 +32,7 @@ Use:
 
 ```text
 recurso_message_thread({
-  target: "parent",
+  target: "the-parent-thread-id-from-your-prompt",
   type: "done",
   message: "Concise result, files changed, checks run, risks."
 })

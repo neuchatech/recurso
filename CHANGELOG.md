@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.5 - 2026-05-24
+
+Concrete parent identity guidance release.
+
+- Worker prompts now prefer concrete parent thread IDs for reports when a
+  concrete parent exists.
+- Skills clarify that `parent` is a live-run convenience alias, not the most
+  durable identity for resumed or nested coordination.
+
 ## 1.1.4 - 2026-05-24
 
 Native message delivery reliability release.

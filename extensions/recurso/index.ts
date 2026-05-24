@@ -16,7 +16,7 @@ const TOOL_LIST = "recurso_list_threads";
 const TOOL_ABORT = "recurso_abort_thread";
 
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
-const RECURSO_API_VERSION = "1.1.4";
+const RECURSO_API_VERSION = "1.1.5";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
@@ -1265,9 +1265,14 @@ function buildThreadPrompt(input: {
   depth: number;
   maxDepth: number;
 }): string {
+  const parentTarget = input.parentId === "parent" ? "parent" : input.parentId;
+  const parentLine =
+    input.parentId === "parent"
+      ? 'The thread that spawned you is the root parent session. Use target "parent" to message it.'
+      : `The thread that spawned you is ${input.parentId}. Prefer target "${input.parentId}" when messaging it; target "parent" is only a live-run convenience alias.`;
   const lines = [
     `You are Recurso thread ${input.id}.`,
-    `The thread that spawned you is ${input.parentId}. Use target "parent" to message it, or use a concrete thread ID when you know one.`,
+    parentLine,
     `Depth: ${input.depth}/${input.maxDepth}.`,
     "",
     "You are a normal Recurso agent with the same Recurso tools as other threads. Focus on the assignment below; treat prior conversation as context, not as permission to take over the whole session.",
@@ -1283,7 +1288,8 @@ function buildThreadPrompt(input: {
 
   lines.push(
     "Communication:",
-    `- Use ${TOOL_MESSAGE} with target "parent" for questions, sparse progress, or completion to the thread that spawned you.`,
+    `- Use ${TOOL_MESSAGE} with target "${parentTarget}" for questions, sparse progress, or completion to the thread that spawned you.`,
+    '- Target "parent" remains available as a convenience alias during live runs, but concrete thread IDs are clearer and more durable.',
     "- Use concrete Recurso thread IDs to message known sibling or descendant threads.",
     "- Use type question only for cross-boundary decisions or blockers.",
     "- Use type done when the assignment is complete.",

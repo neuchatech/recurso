@@ -39,7 +39,7 @@ local message bus and a way to run more Pi agents.
 
 ## Status
 
-`v1.1.4` is the current public release. The core tool names, message
+`v1.1.5` is the current public release. The core tool names, message
 contract, default session-history behavior, and snapshot schema are intended to
 remain compatible across `1.x`.
 

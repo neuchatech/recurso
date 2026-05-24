@@ -10,8 +10,9 @@ Use Recurso when independent work can make progress in another live Pi thread.
 ## Mental Model
 
 - Every Recurso thread is a normal Pi agent with the same Recurso tools.
-- `parent` is a routing alias for the thread that spawned the current thread.
-- Use concrete Recurso thread IDs when messaging known sibling or descendant threads.
+- `parent` is a live-run routing alias for the thread that spawned the current thread.
+- Prefer concrete Recurso thread IDs when a prompt gives you one, especially for
+  parent, sibling, or descendant messaging.
 - The process tree is only an ownership and routing detail; it is not a capability boundary.
 
 ## Tools
@@ -49,10 +50,11 @@ Report back to the spawning thread with:
 
 ```text
 recurso_message_thread({
-  target: "parent",
+  target: "the-parent-thread-id-from-your-prompt",
   type: "done",
   message: "Concise result, files changed, checks run, risks."
 })
 ```
 
-Use a thread ID instead of `parent` when messaging a known sibling or descendant.
+Use `target: "parent"` only when no concrete parent thread id was provided or
+when the prompt says the parent is the root parent session.
