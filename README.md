@@ -121,7 +121,7 @@ The spawned threads can report:
 
 ```text
 recurso_message_thread({
-  target: "parent",
+  target: "the-parent-thread-id-from-the-worker-prompt",
   type: "done",
   message: "Concise result, files changed, checks run, risks."
 })
@@ -131,14 +131,15 @@ Or ask a blocking question:
 
 ```text
 recurso_message_thread({
-  target: "parent",
+  target: "the-parent-thread-id-from-the-worker-prompt",
   type: "question",
   message: "I found two possible APIs. Which one should I align with?"
 })
 ```
 
-Use a concrete thread id instead of `parent` when messaging a known sibling or
-descendant thread.
+Spawned workers receive their concrete thread id and parent/orchestrator thread
+id in their first visible prompt. Prefer that concrete parent id for reports;
+`target: "parent"` remains available as a live-run convenience alias.
 
 ## Session History
 
@@ -214,10 +215,10 @@ This works whether the target thread is idle or already streaming.
 
 Recurso threads are meant to be event-driven.
 
-When a spawned thread calls `recurso_message_thread` with `target: "parent"`
-and `type: "question"` or `type: "done"`, the tool asks Pi to stop that
-thread's current run after the message tool call. The RPC process stays alive
-and idle.
+When a spawned thread calls `recurso_message_thread` with its concrete parent
+thread id or `target: "parent"` and `type: "question"` or `type: "done"`, the
+tool asks Pi to stop that thread's current run after the message tool call. The
+RPC process stays alive and idle.
 
 Later, when the spawning thread sends it another `recurso_message_thread`
 message, Recurso dispatches the message with RPC `prompt`:

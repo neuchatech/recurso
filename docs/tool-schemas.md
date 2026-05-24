@@ -32,6 +32,11 @@ Parameters:
 Fork the current Pi session, or an existing Recurso thread, into a live
 Recurso thread.
 
+The spawned worker receives an explicit visible identity and assignment packet:
+worker thread id, parent/orchestrator thread id, whether it is a fresh or forked
+worker, report-back instructions, and stop-after-`done` / stop-after-`question`
+rules.
+
 Parameters:
 
 - `task` string, required.
@@ -52,6 +57,10 @@ Parameters:
 
 `question` and `done` messages to the spawning thread ask the sender to stop
 after the tool call. The process remains alive and can be woken later.
+
+Supervisor managers route Recurso message tool calls from child RPC events.
+Routing is attempted from both tool-start arguments and tool-end result details
+so a worker report is not lost if one event shape is incomplete.
 
 ## `recurso_peek_thread`
 

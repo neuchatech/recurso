@@ -46,13 +46,17 @@ when a thread prompt provides them.
 
 Give each spawned thread:
 
+- Recurso will inject the worker's concrete thread id and parent/orchestrator
+  id automatically; do not contradict that identity in your task.
 - A bounded objective.
 - Read and write scope.
 - Expected deliverable.
 - Constraints and coordination risks.
-- The exact target for reports. Prefer the concrete parent thread id when known;
-  use `target: "parent"` only when the parent is the root parent session or no
-  concrete id is available.
+- The expected report shape: `recurso_message_thread` with `type: "done"` or
+  `type: "question"`, then stop.
+- Prefer the concrete parent thread id injected into the worker prompt. Use
+  `target: "parent"` only when the injected prompt says the parent is the root
+  parent session or no concrete id is available.
 
 ## Completion Handling
 
