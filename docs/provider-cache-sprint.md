@@ -93,6 +93,22 @@ Updated conclusion: OpenRouter DS4 fork-cache behavior is not settled by a singl
 - OpenAI direct: test Chat Completions/Responses as available, inspect whether `prompt_cache_key` or `previous_response_id` can be used to support branch cache.
 - Gemini direct: test implicit cache and investigate explicit cached content; determine whether Pi provider can attach reusable cached content to forked threads.
 
+## Connectivity Preflight
+
+Run date: 2026-05-24.
+
+Keys were loaded from `recurso/.env`.
+
+| Provider path | Pi provider | Probe model | Connectivity | Notes |
+| --- | --- | --- | --- | --- |
+| OpenRouter DS4 Pro pinned | `openrouter-deepseek` | `deepseek/deepseek-v4-pro` | OK | Returned `OK_OPENROUTER`; response model was `deepseek/deepseek-v4-pro-20260423`. |
+| DeepSeek direct | `deepseek` | `deepseek-v4-pro` | Blocked | API returned `401 Authentication Fails`. Check that `DEEPSEEK_API_KEY` is a real DeepSeek key, not a placeholder or OpenRouter key. |
+| OpenAI direct | `openai` | `gpt-5.4-mini` | OK | Returned `OK_OPENAI`; usage surfaced through the OpenAI Responses provider. |
+| Gemini AI Studio direct | `google` | `gemini-2.5-flash` | OK | Returned `OK_GEMINI_FLASH`. `gemini-3.1-pro-preview` hit free-tier quota limits; use Flash for initial probes unless billing/quota is enabled. |
+| Anthropic direct | `anthropic` | `claude-sonnet-4-6` | OK | Returned `OK_ANTHROPIC`. Use hyphenated model id `claude-sonnet-4-6`, not `claude-sonnet-4.6`. |
+
+Anthropic dashboard note: API prompt caching is enabled per request by sending `cache_control` breakpoints. A dashboard "not enabled" state is not a separate Recurso setup blocker unless cache-enabled requests still return no `cache_read_input_tokens` / `cache_creation_input_tokens`.
+
 ## Possible V2 Directions
 
 - Document provider cache behavior and expose `recurso_cache_profile` diagnostics.
