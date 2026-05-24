@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as crypto from "node:crypto";
+import * as net from "node:net";
 import * as path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
@@ -20,6 +21,8 @@ const RECURSO_API_VERSION = "1.1.5";
 const RECURSO_SNAPSHOT_SCHEMA_VERSION = 1;
 const RECURSO_OPENAI_CACHE_LINEAGE_ENV = "RECURSO_OPENAI_CACHE_LINEAGE";
 const RECURSO_SHUTDOWN_BEHAVIOR_ENV = "RECURSO_SHUTDOWN_BEHAVIOR";
+const RECURSO_DASHBOARD_DEFAULT_PACKAGE = "github:neuchatech/recurso-dashboard";
+const RECURSO_DASHBOARD_DEFAULT_PORT = 3737;
 const EXTENSION_FILE = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = dirname(dirname(dirname(EXTENSION_FILE)));
 const PI_DEFAULT_SESSION_DIR_VALUES = new Set(["default", "pi", "pi-default", "history"]);
@@ -131,6 +134,18 @@ interface StartThreadOptions {
   provider?: string;
   thinking?: ThinkingLevel;
   tools?: string[];
+}
+
+interface DashboardCommand {
+  command: string;
+  args: string[];
+  source: string;
+}
+
+interface DashboardCommandOptions {
+  install: boolean;
+  noInstall: boolean;
+  port?: number;
 }
 
 class JsonlReader {
@@ -869,6 +884,8 @@ class RecursoManager {
 
 export default function recurso(pi: ExtensionAPI) {
   const manager = new RecursoManager(pi);
+  let dashboardProcess: ChildProcess | null = null;
+  let dashboardUrl: string | null = null;
 
   pi.on("session_start", (_event, ctx) => {
     manager.setCwd(ctx.cwd);
@@ -1118,6 +1135,115 @@ export default function recurso(pi: ExtensionAPI) {
       ctx.ui.notify(`Recurso stopped ${count} thread(s).`, "info");
     },
   });
+
+  pi.registerCommand("recurso-dashboard", {
+    description: "Start the optional Recurso Dashboard for this workspace",
+    handler: async (args, ctx) => {
+      try {
+        if (dashboardProcess && childProcessIsAlive(dashboardProcess)) {
+          ctx.ui.notify(`Recurso Dashboard is already running at ${dashboardUrl || "the previous dashboard URL"}.`, "info");
+          return;
+        }
+
+        dashboardProcess = null;
+        dashboardUrl = null;
+
+        const cwd = commandCwd(ctx);
+        const options = parseDashboardCommandOptions(args);
+        let command = resolveDashboardCommand(cwd);
+
+        if (!command) {
+          const packageSpec = dashboardPackageSpec();
+          if (options.noInstall) {
+            ctx.ui.notify(dashboardInstallHelp(packageSpec), "info");
+            return;
+          }
+
+          const confirmed = options.install || await confirmDashboardInstall(ctx, packageSpec);
+          if (!confirmed) {
+            ctx.ui.notify(dashboardInstallHelp(packageSpec), "info");
+            return;
+          }
+
+          command = npmExecDashboardCommand(packageSpec);
+        }
+
+        const host = process.env.RECURSO_DASHBOARD_HOST || "127.0.0.1";
+        const port = await findOpenDashboardPort(options.port || numberFromEnv("RECURSO_DASHBOARD_PORT", RECURSO_DASHBOARD_DEFAULT_PORT), host);
+        const runsDir = runsDirForWorkspace(cwd);
+        const url = `http://${host}:${port}`;
+        const dashboardArgs = [
+          ...command.args,
+          "--workspace",
+          cwd,
+          "--runs-dir",
+          runsDir,
+          "--host",
+          host,
+          "--port",
+          String(port),
+        ];
+
+        if (process.env.RECURSO_SESSION_DIR) {
+          dashboardArgs.push("--session-dir", process.env.RECURSO_SESSION_DIR);
+        }
+
+        const proc = spawn(command.command, dashboardArgs, {
+          cwd,
+          env: {
+            ...process.env,
+            RECURSO_DASHBOARD_WORKSPACE: cwd,
+            RECURSO_RUNS_DIR: runsDir,
+            RECURSO_DASHBOARD_HOST: host,
+            RECURSO_DASHBOARD_PORT: String(port),
+          },
+          detached: true,
+          stdio: "ignore",
+          shell: false,
+        });
+
+        dashboardProcess = proc;
+        dashboardUrl = url;
+
+        proc.once("exit", () => {
+          if (dashboardProcess === proc) {
+            dashboardProcess = null;
+            dashboardUrl = null;
+          }
+        });
+
+        proc.unref();
+        await sleep(800);
+
+        if (proc.exitCode !== null) {
+          dashboardProcess = null;
+          dashboardUrl = null;
+          throw new Error(`Dashboard process exited immediately with code ${proc.exitCode}.`);
+        }
+
+        ctx.ui.notify(`Recurso Dashboard starting at ${url} (${command.source}).`, "info");
+      } catch (error) {
+        ctx.ui.notify(`Recurso Dashboard failed to start: ${errorMessage(error)}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand("recurso-dashboard-stop", {
+    description: "Stop the Recurso Dashboard started by this Pi session",
+    handler: async (_args, ctx) => {
+      if (!dashboardProcess || !childProcessIsAlive(dashboardProcess)) {
+        dashboardProcess = null;
+        dashboardUrl = null;
+        ctx.ui.notify("Recurso Dashboard is not running.", "info");
+        return;
+      }
+
+      terminateDashboardProcess(dashboardProcess);
+      dashboardProcess = null;
+      dashboardUrl = null;
+      ctx.ui.notify("Recurso Dashboard stopped.", "info");
+    },
+  });
 }
 
 function assertSuccess(response: RpcResponse): void {
@@ -1142,6 +1268,184 @@ function numberFromEnv(name: string, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function commandCwd(ctx: any): string {
+  return typeof ctx?.cwd === "string" && ctx.cwd ? ctx.cwd : process.cwd();
+}
+
+function parseDashboardCommandOptions(args: any): DashboardCommandOptions {
+  const words = commandWords(args);
+  const options: DashboardCommandOptions = { install: false, noInstall: false };
+
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === "--install") {
+      options.install = true;
+      continue;
+    }
+    if (word === "--no-install") {
+      options.noInstall = true;
+      continue;
+    }
+    if (word === "--port" && words[index + 1]) {
+      options.port = parseDashboardPort(words[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("--port=")) {
+      options.port = parseDashboardPort(word.slice("--port=".length));
+    }
+  }
+
+  return options;
+}
+
+function commandWords(args: any): string[] {
+  if (Array.isArray(args)) return args.map(String);
+  if (typeof args === "string") return splitCommandWords(args);
+  if (typeof args?.raw === "string") return splitCommandWords(args.raw);
+  if (typeof args?.text === "string") return splitCommandWords(args.text);
+  if (Array.isArray(args?.args)) return args.args.map(String);
+  return [];
+}
+
+function splitCommandWords(value: string): string[] {
+  return value.match(/"[^"]*"|'[^']*'|\S+/g)?.map((word) => {
+    if ((word.startsWith('"') && word.endsWith('"')) || (word.startsWith("'") && word.endsWith("'"))) {
+      return word.slice(1, -1);
+    }
+    return word;
+  }) || [];
+}
+
+function parseDashboardPort(value: string): number | undefined {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 65535) return undefined;
+  return parsed;
+}
+
+function dashboardPackageSpec(): string {
+  return process.env.RECURSO_DASHBOARD_PACKAGE || RECURSO_DASHBOARD_DEFAULT_PACKAGE;
+}
+
+function resolveDashboardCommand(cwd: string): DashboardCommand | undefined {
+  const envBin = process.env.RECURSO_DASHBOARD_BIN?.trim();
+  if (envBin) return { command: envBin, args: [], source: "RECURSO_DASHBOARD_BIN" };
+
+  const binName = dashboardBinName();
+  const workspaceBin = path.join(cwd, "node_modules", ".bin", binName);
+  if (fileIsExecutable(workspaceBin)) return { command: workspaceBin, args: [], source: "workspace install" };
+
+  const adjacentCheckout = path.resolve(PACKAGE_ROOT, "..", "recurso-dashboard", "bin", "recurso-dashboard.mjs");
+  if (fs.existsSync(adjacentCheckout)) return { command: process.execPath, args: [adjacentCheckout], source: "adjacent dashboard checkout" };
+
+  const pathBin = findOnPath(binName);
+  if (pathBin) return { command: pathBin, args: [], source: "PATH" };
+
+  return undefined;
+}
+
+function dashboardBinName(): string {
+  return process.platform === "win32" ? "recurso-dashboard.cmd" : "recurso-dashboard";
+}
+
+function fileIsExecutable(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function findOnPath(binName: string): string | undefined {
+  const pathEnv = process.env.PATH || "";
+  const names = process.platform === "win32"
+    ? [binName, binName.replace(/\.cmd$/i, ""), binName.replace(/\.cmd$/i, ".exe")]
+    : [binName];
+
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!dir) continue;
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      if (fileIsExecutable(candidate)) return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function npmExecDashboardCommand(packageSpec: string): DashboardCommand {
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  return {
+    command: npm,
+    args: ["exec", "--yes", "--package", packageSpec, "--", "recurso-dashboard"],
+    source: `npm exec ${packageSpec}`,
+  };
+}
+
+async function confirmDashboardInstall(ctx: any, packageSpec: string): Promise<boolean> {
+  if (typeof ctx?.ui?.confirm !== "function") return false;
+  return Boolean(await ctx.ui.confirm(
+    "Install Recurso Dashboard?",
+    `The dashboard is optional. Recurso can run it for this workspace with npm exec --package ${packageSpec}. Continue?`,
+  ));
+}
+
+function dashboardInstallHelp(packageSpec: string): string {
+  return `Recurso Dashboard is optional. Install it with "npm install -D ${packageSpec}", or set RECURSO_DASHBOARD_BIN to a dashboard binary, then run /recurso-dashboard again.`;
+}
+
+function runsDirForWorkspace(cwd: string): string {
+  return path.join(cwd, ".pi", "recurso", "runs");
+}
+
+async function findOpenDashboardPort(startPort: number, host: string): Promise<number> {
+  for (let port = startPort; port < startPort + 50; port += 1) {
+    if (await dashboardPortIsOpen(port, host)) return port;
+  }
+  return startPort;
+}
+
+function dashboardPortIsOpen(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", () => resolve(false));
+    server.listen({ host, port }, () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+function childProcessIsAlive(proc: ChildProcess): boolean {
+  if (proc.killed || proc.exitCode !== null) return false;
+  return typeof proc.pid === "number" ? pidIsAlive(proc.pid) : true;
+}
+
+function terminateDashboardProcess(proc: ChildProcess): void {
+  try {
+    if (process.platform !== "win32" && proc.pid) {
+      process.kill(-proc.pid, "SIGTERM");
+      return;
+    }
+  } catch {
+    // Fall back to killing the process handle below.
+  }
+
+  try {
+    proc.kill("SIGTERM");
+  } catch {
+    // The process may already be gone.
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isSupervisorTarget(target: string): boolean {

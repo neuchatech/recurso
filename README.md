@@ -67,6 +67,40 @@ pi -e ./recurso
 
 Pi discovers the package through the `pi` manifest in `package.json`.
 
+## Optional Dashboard
+
+Recurso stays small, but it can launch the optional local dashboard for the
+workspace you are currently using:
+
+```text
+/recurso-dashboard
+```
+
+The command looks for a `recurso-dashboard` binary in the current workspace,
+then an adjacent checkout, then `PATH`. If it cannot find one, it asks before
+running the dashboard through:
+
+```bash
+npm exec --yes --package github:neuchatech/recurso-dashboard -- recurso-dashboard
+```
+
+For a pinned workspace install:
+
+```bash
+npm install -D github:neuchatech/recurso-dashboard
+```
+
+Useful knobs:
+
+```bash
+RECURSO_DASHBOARD_PORT=4000 pi
+RECURSO_DASHBOARD_BIN=/path/to/recurso-dashboard pi
+RECURSO_DASHBOARD_PACKAGE=recurso-dashboard@latest pi
+```
+
+Use `/recurso-dashboard-stop` to stop a dashboard started by the current Pi
+session.
+
 ## Quick Start
 
 Ask Pi to use Recurso:

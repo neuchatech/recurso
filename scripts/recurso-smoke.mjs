@@ -81,6 +81,7 @@ async function runPiOffline() {
 
   const output = `${result.stdout}\n${result.stderr}`;
   assert(output.includes("recurso-status"), "offline RPC exposed recurso-status");
+  assert(output.includes("recurso-dashboard"), "offline RPC exposed recurso-dashboard");
   assert(output.includes("skill:recurso"), "offline RPC exposed /skill:recurso");
 }
 
