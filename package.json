@@ -1,7 +1,7 @@
 {
   "name": "recurso",
   "version": "0.1.0",
-  "description": "RPC-backed thread orchestration for Pi agents.",
+  "description": "Agent-to-agent orchestration for Pi.",
   "homepage": "https://github.com/neuchatech/recurso#readme",
   "repository": {
     "type": "git",

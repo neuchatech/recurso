@@ -1,31 +1,50 @@
 # Recurso
 
-Recurso is an RPC-backed thread orchestration package for Pi.
+Agent-to-agent orchestration for Pi.
 
-It gives Pi agents a small set of tools for creating, forking, messaging,
-inspecting, and aborting live Recurso threads. Each thread is a real
-`pi --mode rpc` child process with its own session file and context window.
+Recurso gives a Pi agent the missing move: it can create other live Pi agents,
+fork context into them, message them, wake them later, and inspect what they did
+afterward. Instead of forcing one model call to pretend it is a whole team,
+Recurso lets an agent use agentic AI the way a human operator would: start
+focused collaborators, hand them bounded work, and coordinate through messages.
+
+Each Recurso thread is a real `pi --mode rpc` process with its own context
+window, session file, tools, and model loop. Threads can stop when they report
+`done` or `question`, then wake up when another thread sends them more work.
+That means orchestrators do not need to sit there polling. They can let the
+runtime carry messages.
+
+## Why Recurso
+
+Most agentic environments still have a single-agent bottleneck:
+
+- one context has to remember every workstream;
+- "subagents" often collapse into polling, log scraping, or final-only reports;
+- parent agents waste turns checking whether workers finished;
+- sibling agents cannot easily coordinate with each other;
+- users cannot inspect the actual threads that did the work.
+
+Recurso turns Pi into a live agent network:
+
+- agents can create and fork other agents on demand;
+- any Recurso thread can message any known thread id;
+- `parent` is only a routing alias for "the thread that spawned me";
+- `followUp` queues work patiently, while `steer` handles urgent corrections;
+- `question` and `done` messages wake the receiver and can let the sender stop;
+- sessions use Pi's normal history by default, so the work is inspectable.
+
+This is intentionally simple. Recurso is not a remote platform, not a database,
+and not a heavyweight daemon. It is a Pi package that gives Pi agents a clean
+local message bus and a way to run more Pi agents.
 
 ## Status
 
-Early package scaffold. The API is usable for local testing, but expect the
-tool names and registry format to evolve before a `1.0.0` release.
+Early public package. The current API is usable for local work and demos, but
+the project should get more hardening before a `1.0.0` tag.
 
 ## Install
 
-Local development:
-
-```bash
-pi install ./recurso -l
-```
-
-If this directory is the repository root, use:
-
-```bash
-pi install . -l
-```
-
-From a git repo:
+From GitHub:
 
 ```bash
 pi install git:github.com/neuchatech/recurso
@@ -47,17 +66,56 @@ pi -e ./recurso
 
 Pi discovers the package through the `pi` manifest in `package.json`.
 
-To have Recurso threads appear in Pi's normal session history, opt in
-when starting Pi:
+## Quick Start
 
-```bash
-RECURSO_SESSION_DIR=default pi
+Ask Pi to use Recurso:
+
+```text
+Use /skill:recurso.
+
+Fork one thread to inspect the auth module and another to inspect the billing
+module. Have them report back with recurso_message_thread when done. Do not
+poll by default; let their messages wake you.
 ```
 
-For a persistent personal setup, export it from your shell profile:
+The spawned threads can report:
+
+```text
+recurso_message_thread({
+  target: "parent",
+  type: "done",
+  message: "Concise result, files changed, checks run, risks."
+})
+```
+
+Or ask a blocking question:
+
+```text
+recurso_message_thread({
+  target: "parent",
+  type: "question",
+  message: "I found two possible APIs. Which one should I align with?"
+})
+```
+
+Use a concrete thread id instead of `parent` when messaging a known sibling or
+descendant thread.
+
+## Session History
+
+Recurso uses Pi's normal session history by default. That is deliberate:
+threads should be inspectable in the same place you already inspect Pi work.
+
+If you want isolated Recurso session files instead:
 
 ```bash
-export RECURSO_SESSION_DIR=default
+RECURSO_SESSION_DIR=isolated pi
+```
+
+For a custom directory:
+
+```bash
+RECURSO_SESSION_DIR=.pi/recurso/sessions pi
 ```
 
 This setting affects threads that Recurso spawns. The current Pi session's
@@ -66,7 +124,7 @@ parent RPC process manually and want that parent to appear beside its spawned
 threads in normal Pi history, do not pass a custom parent `--session-dir`:
 
 ```bash
-RECURSO_SESSION_DIR=default pi -e ./recurso --mode rpc
+pi -e ./recurso --mode rpc
 ```
 
 If you do pass `--session-dir` to the parent process, that parent session stays
@@ -74,7 +132,7 @@ in the custom directory even when spawned Recurso threads use normal Pi history.
 
 ## Tools
 
-Recurso uses namespaced tool names so it can coexist with other experiments.
+Recurso uses namespaced tool names so it can coexist with other Pi packages.
 
 | Tool | Purpose |
 | --- | --- |
@@ -85,7 +143,7 @@ Recurso uses namespaced tool names so it can coexist with other experiments.
 | `recurso_list_threads` | List live threads owned by the current manager process. |
 | `recurso_abort_thread` | Abort a running turn or terminate a thread process. |
 
-## Messaging Semantics
+## Messaging
 
 Recurso sends messages through Pi RPC `prompt` commands with
 `streamingBehavior`:
@@ -101,9 +159,9 @@ current work. Use `steer` only for urgent corrections or blockers:
 { "type": "prompt", "message": "...", "streamingBehavior": "steer" }
 ```
 
-This form works whether the target thread is idle or already streaming.
+This works whether the target thread is idle or already streaming.
 
-## Stop And Wake Behavior
+## Stop And Wake
 
 Recurso threads are meant to be event-driven.
 
@@ -120,17 +178,15 @@ message, Recurso dispatches the message with RPC `prompt`:
 - if the target thread needs urgent correction, `steer` queues it before the
   next model call.
 
-This is why agents should not sleep or poll by default after spawning threads.
-Spawned threads should report `question`, `progress`, or `done`; those
-messages wake the receiver. Polling and `recurso_peek_thread` remain useful for
-diagnosis, progress audits, time-sensitive coordination, or when a message
-needs more context.
+Polling and `recurso_peek_thread` remain useful for diagnosis, progress audits,
+time-sensitive coordination, or when a message needs more context. They should
+not be the default coordination loop.
 
 ## How It Works
 
-The Recurso extension acts as the local manager for the current Pi process.
-It is the "daemon" while that Pi process is alive. It is not a separate
-system service.
+The Recurso extension acts as the local manager for the current Pi process. It
+is the "daemon" while that Pi process is alive. It is not a separate system
+service.
 
 When an agent creates or forks a thread, Recurso:
 
@@ -143,37 +199,9 @@ When an agent creates or forks a thread, Recurso:
    threads, or local descendants.
 
 The process tree is only an ownership and routing detail. Every Recurso thread
-has the same Recurso tools and can create, fork, and message threads. The
-special target `parent` is just an alias for the thread that spawned the current
-thread; use concrete thread IDs when messaging known siblings or descendants.
-
-By default, thread sessions are stored under `.pi/recurso/sessions/`. Set
-`RECURSO_SESSION_DIR=default` to let spawned threads use Pi's normal session
-history instead. Spawned threads inherit the current provider and model unless
-a tool call supplies `provider` or `model` explicitly.
-
-## Typical Use
-
-```text
-Use recurso_fork_thread to ask one thread to inspect the auth module and
-another to inspect the billing module. Have them report back with
-recurso_message_thread when done.
-```
-
-Spawned threads can call:
-
-```text
-recurso_message_thread({ target: "parent", type: "done", message: "..." })
-```
-
-or:
-
-```text
-recurso_message_thread({ target: "parent", type: "question", message: "..." })
-```
-
-`question` and `done` messages ask the spawned thread to stop after sending the
-message. `progress` is for sparse milestones only.
+has the same Recurso tools and can create, fork, and message threads. Spawned
+threads inherit the current provider and model unless a tool call supplies
+`provider` or `model` explicitly.
 
 ## Skills
 
@@ -194,7 +222,7 @@ Environment variables:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `RECURSO_PI_BIN` | `pi` | Pi executable used for spawned RPC processes. |
-| `RECURSO_SESSION_DIR` | `.pi/recurso/sessions` | Spawned thread session storage. Set `default`, `pi`, `pi-default`, or `history` to use Pi's normal session directory; set a path to use a custom directory. Relative paths resolve from the workspace cwd. |
+| `RECURSO_SESSION_DIR` | `default` | Spawned thread session storage. `default`, `pi`, `pi-default`, or `history` use Pi's normal session directory. `isolated`, `local`, or `recurso` use `.pi/recurso/sessions`. Any other value is treated as a custom path relative to the workspace cwd unless absolute. |
 | `RECURSO_MAX_DEPTH` | `3` | Maximum recursive thread depth. |
 | `RECURSO_MAX_PARALLEL_THREADS` | `10` | Maximum live Recurso threads in one Recurso run tree. |
 | `RECURSO_BOOTSTRAP_CHILDREN` | auto | Set `1` to force child processes to load this extension by path; set `0` to disable. |
@@ -202,12 +230,37 @@ Environment variables:
 
 ## Data Layout
 
+Recurso always stores local runtime metadata:
+
 ```text
 .pi/recurso/
   prompts/      # generated thread system prompt files
   runs/         # per-manager thread registry snapshots
-  sessions/     # spawned thread session JSONL files, unless RECURSO_SESSION_DIR=default
 ```
+
+If `RECURSO_SESSION_DIR=isolated`, spawned thread sessions are also stored at:
+
+```text
+.pi/recurso/sessions/
+```
+
+## Before 1.0
+
+The core idea is working. Before tagging `v1.0.0`, the project should earn a
+little more confidence:
+
+- a small automated integration harness for new, fork, message, wake, sibling
+  routing, nested routing, abort, and max-thread limits;
+- sharper guidance so orchestrators naturally avoid `sleep` polling;
+- persisted thread registry recovery, so a manager can reattach to live or
+  recently exited threads after a restart when Pi supports it cleanly;
+- clearer UX for recursive descendants that are not directly owned by the
+  current manager;
+- versioned tool schemas and documented compatibility expectations;
+- a few real-world examples, especially code review, research swarms, and
+  implementation plus verification teams;
+- a security note for tool allowlists and package trust that is prominent
+  enough for public users.
 
 ## Notes
 
@@ -223,8 +276,8 @@ Environment variables:
 
 Pi packages execute arbitrary code with your user permissions. Recurso starts
 additional Pi processes that can use the tools available to those processes.
-Review the package, your Pi settings, and any loaded extensions before using
-it on sensitive repositories.
+Review the package, your Pi settings, and any loaded extensions before using it
+on sensitive repositories.
 
 ## Development Checks
 
@@ -239,7 +292,7 @@ npx --yes esbuild recurso/extensions/recurso/index.ts \
   --outfile=/tmp/recurso-index.mjs
 
 printf '{"id":"state","type":"get_state"}\n{"id":"commands","type":"get_commands"}\n' \
-  | PI_CODING_AGENT_DIR="$PWD/.pi/agent" RECURSO_SESSION_DIR=default \
+  | PI_CODING_AGENT_DIR="$PWD/.pi/agent" \
       pi -e "$PWD/recurso" --no-extensions --offline --mode rpc
 
 npm pack ./recurso --pack-destination /tmp

@@ -18,6 +18,7 @@ const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, 
 const EXTENSION_FILE = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = dirname(dirname(dirname(EXTENSION_FILE)));
 const PI_DEFAULT_SESSION_DIR_VALUES = new Set(["default", "pi", "pi-default", "history"]);
+const RECURSO_ISOLATED_SESSION_DIR_VALUES = new Set(["isolated", "local", "recurso"]);
 
 type DeliveryMode = "followUp" | "steer";
 type ThreadMessageType = "question" | "done" | "progress";
@@ -712,8 +713,10 @@ class RecursoManager {
 
   private childSessionDir(cwd: string): string | undefined {
     const configured = process.env.RECURSO_SESSION_DIR?.trim();
-    if (!configured) return path.join(this.recursoDir(cwd), "sessions");
-    if (PI_DEFAULT_SESSION_DIR_VALUES.has(configured.toLowerCase())) return undefined;
+    if (!configured) return undefined;
+    const normalized = configured.toLowerCase();
+    if (PI_DEFAULT_SESSION_DIR_VALUES.has(normalized)) return undefined;
+    if (RECURSO_ISOLATED_SESSION_DIR_VALUES.has(normalized)) return path.join(this.recursoDir(cwd), "sessions");
     return path.isAbsolute(configured) ? configured : path.resolve(cwd, configured);
   }
 
