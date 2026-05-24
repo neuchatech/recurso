@@ -1,5 +1,9 @@
 # Recurso
 
+<p align="center">
+  <img src="docs/assets/recurso-logo.png" alt="Recurso logo" width="180">
+</p>
+
 Agent-to-agent orchestration for Pi.
 
 Recurso gives a Pi agent the missing move: it can create other live Pi agents,
