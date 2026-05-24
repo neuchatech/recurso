@@ -17,6 +17,7 @@ const TOOL_ABORT = "recurso_abort_thread";
 const RECURSO_TOOLS = [TOOL_NEW, TOOL_FORK, TOOL_MESSAGE, TOOL_PEEK, TOOL_LIST, TOOL_ABORT];
 const EXTENSION_FILE = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = dirname(dirname(dirname(EXTENSION_FILE)));
+const PI_DEFAULT_SESSION_DIR_VALUES = new Set(["default", "pi", "pi-default", "history"]);
 
 type DeliveryMode = "followUp" | "steer";
 type ThreadMessageType = "question" | "done" | "progress";
@@ -311,9 +312,10 @@ class RecursoManager {
   private baseCwd: string | undefined;
   private readonly managerId = process.env.RECURSO_THREAD_ID || "parent";
   private readonly parentId = process.env.RECURSO_PARENT_THREAD_ID || "";
+  private readonly runId = process.env.RECURSO_RUN_ID || `${safeName(this.managerId)}-${process.pid}`;
   private readonly depth = numberFromEnv("RECURSO_DEPTH", 0);
   private readonly maxDepth = numberFromEnv("RECURSO_MAX_DEPTH", 3);
-  private readonly maxActiveThreads = numberFromEnv("RECURSO_MAX_ACTIVE_THREADS", 8);
+  private readonly maxParallelThreads = numberFromEnv("RECURSO_MAX_PARALLEL_THREADS", 10);
   private bootstrapChildren = process.env.RECURSO_BOOTSTRAP_CHILDREN === "1";
 
   constructor(private readonly pi: ExtensionAPI) {}
@@ -321,7 +323,8 @@ class RecursoManager {
   setCwd(cwd: string): void {
     this.baseCwd = cwd;
     ensureDir(this.recursoDir(cwd));
-    ensureDir(this.sessionsDir(cwd));
+    const childSessionDir = this.childSessionDir(cwd);
+    if (childSessionDir) ensureDir(childSessionDir);
     ensureDir(this.promptsDir(cwd));
     ensureDir(this.runsDir(cwd));
     this.writeSnapshot(cwd);
@@ -374,11 +377,11 @@ class RecursoManager {
   }): Promise<{ routed: boolean; note: string }> {
     const routed: RoutedThreadMessage = { ...params, routedAt: Date.now() };
 
-    if (params.target === "parent") {
+    if (params.target === "parent" || (this.parentId && params.target === this.parentId)) {
       if (this.parentId) {
         return {
           routed: false,
-          note: `Message emitted for supervisor routing from ${params.from} to parent.`,
+          note: `Message emitted for supervisor routing from ${params.from} to ${params.target}.`,
         };
       }
       return {
@@ -396,7 +399,7 @@ class RecursoManager {
 
     if (params.target === this.managerId || params.target === "root") {
       this.deliverToLocalAgent(routed);
-      return { routed: true, note: `Routed ${params.type} message from ${params.from} to parent.` };
+      return { routed: true, note: `Routed ${params.type} message from ${params.from} to this thread.` };
     }
 
     const targetThread = this.threads.get(params.target);
@@ -476,15 +479,15 @@ class RecursoManager {
       throw new Error(`Max Recurso depth ${this.maxDepth} reached.`);
     }
 
-    const liveCount = Array.from(this.threads.values()).filter((thread) => !isDead(thread)).length;
-    if (liveCount >= this.maxActiveThreads) {
-      throw new Error(`Max live Recurso threads ${this.maxActiveThreads} reached for this manager.`);
+    const liveCount = this.liveThreadCount(cwd);
+    if (liveCount >= this.maxParallelThreads) {
+      throw new Error(`Max parallel Recurso threads ${this.maxParallelThreads} reached for this Recurso run.`);
     }
 
     const id = newThreadId();
     const childDepth = this.depth + 1;
     const promptFile = path.join(this.promptsDir(cwd), `${id}.md`);
-    const prompt = buildWorkerPrompt({
+    const prompt = buildThreadPrompt({
       id,
       parentId: this.managerId,
       task: options.task,
@@ -501,6 +504,7 @@ class RecursoManager {
         ...process.env,
         RECURSO_THREAD_ID: id,
         RECURSO_PARENT_THREAD_ID: this.managerId,
+        RECURSO_RUN_ID: this.runId,
         RECURSO_DEPTH: String(childDepth),
       },
       onEvent: (event) => {
@@ -573,11 +577,13 @@ class RecursoManager {
     const args = [
       "--mode",
       "rpc",
-      "--session-dir",
-      this.sessionsDir(cwd),
       "--append-system-prompt",
       promptFile,
     ];
+    const childSessionDir = this.childSessionDir(cwd);
+    if (childSessionDir) {
+      args.splice(2, 0, "--session-dir", childSessionDir);
+    }
 
     if (this.bootstrapChildren) {
       args.push("--no-extensions", "--extension", EXTENSION_FILE);
@@ -704,8 +710,11 @@ class RecursoManager {
     return path.join(cwd, ".pi", "recurso");
   }
 
-  private sessionsDir(cwd: string): string {
-    return path.join(this.recursoDir(cwd), "sessions");
+  private childSessionDir(cwd: string): string | undefined {
+    const configured = process.env.RECURSO_SESSION_DIR?.trim();
+    if (!configured) return path.join(this.recursoDir(cwd), "sessions");
+    if (PI_DEFAULT_SESSION_DIR_VALUES.has(configured.toLowerCase())) return undefined;
+    return path.isAbsolute(configured) ? configured : path.resolve(cwd, configured);
   }
 
   private promptsDir(cwd: string): string {
@@ -716,12 +725,49 @@ class RecursoManager {
     return path.join(this.recursoDir(cwd), "runs");
   }
 
+  private liveThreadCount(cwd: string): number {
+    const seen = new Set<string>();
+    let count = 0;
+
+    for (const thread of this.threads.values()) {
+      if (isLiveThreadSnapshot(thread)) {
+        seen.add(thread.id);
+        count += 1;
+      }
+    }
+
+    try {
+      const dir = this.runsDir(cwd);
+      if (!fs.existsSync(dir)) return count;
+
+      for (const entry of fs.readdirSync(dir)) {
+        if (!entry.endsWith(".json")) continue;
+        const file = path.join(dir, entry);
+        const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
+        if (snapshot?.runId !== this.runId || !Array.isArray(snapshot.threads)) continue;
+
+        for (const thread of snapshot.threads) {
+          if (typeof thread?.id !== "string" || seen.has(thread.id)) continue;
+          if (!isLiveThreadSnapshot(thread)) continue;
+          seen.add(thread.id);
+          count += 1;
+        }
+      }
+    } catch {
+      // The in-memory count is still useful if diagnostic snapshots are unreadable.
+    }
+
+    return count;
+  }
+
   private writeSnapshot(cwd: string): void {
     try {
       ensureDir(this.runsDir(cwd));
       const snapshot = {
         managerId: this.managerId,
         parentId: this.parentId || null,
+        runId: this.runId,
+        managerPid: process.pid,
         depth: this.depth,
         packageRoot: PACKAGE_ROOT,
         updatedAt: Date.now(),
@@ -751,19 +797,19 @@ export default function recurso(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL_NEW,
     label: "Recurso New Thread",
-    description: "Start a fresh live Pi RPC worker thread. The thread can be messaged later by ID.",
-    promptSnippet: "Start a fresh Recurso worker thread",
+    description: "Start a fresh live Pi RPC Recurso thread. The thread can be messaged later by ID.",
+    promptSnippet: "Start a fresh Recurso thread",
     promptGuidelines: [
       "Use recurso_new_thread for independent work that does not need the parent conversation history.",
       "Give recurso_new_thread a bounded task and clear deliverable.",
-      "Tell workers to report completion with recurso_message_thread targeting parent.",
+      "Tell spawned threads to report completion with recurso_message_thread targeting parent.",
     ],
     parameters: Type.Object({
-      task: Type.String({ description: "Worker task and expected deliverable." }),
-      context: Type.Optional(Type.String({ description: "Additional context appended to the worker instructions." })),
-      name: Type.Optional(Type.String({ description: "Optional session display name for the worker." })),
-      model: Type.Optional(Type.String({ description: "Optional Pi model pattern for the worker." })),
-      provider: Type.Optional(Type.String({ description: "Optional Pi provider name for the worker." })),
+      task: Type.String({ description: "Thread assignment and expected deliverable." }),
+      context: Type.Optional(Type.String({ description: "Additional context appended to the thread instructions." })),
+      name: Type.Optional(Type.String({ description: "Optional session display name for the thread." })),
+      model: Type.Optional(Type.String({ description: "Optional Pi model pattern for the thread." })),
+      provider: Type.Optional(Type.String({ description: "Optional Pi provider name for the thread." })),
       tools: Type.Optional(Type.Array(Type.String(), { description: "Optional tool allowlist. Recurso tools are added automatically." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -787,20 +833,20 @@ export default function recurso(pi: ExtensionAPI) {
   pi.registerTool({
     name: TOOL_FORK,
     label: "Recurso Fork Thread",
-    description: "Fork the current Pi session, or an existing Recurso thread, into a live Pi RPC worker thread.",
-    promptSnippet: "Fork a Recurso worker thread from current or previous context",
+    description: "Fork the current Pi session, or an existing Recurso thread, into a live Pi RPC Recurso thread.",
+    promptSnippet: "Fork a Recurso thread from current or previous context",
     promptGuidelines: [
-      "Use recurso_fork_thread when the worker needs the current conversation context.",
+      "Use recurso_fork_thread when the new thread needs the current conversation context.",
       "Use fork_from to branch from a previous Recurso thread's session.",
       "Do not routinely poll forked threads. They should report via recurso_message_thread.",
     ],
     parameters: Type.Object({
-      task: Type.String({ description: "Worker task and expected deliverable." }),
+      task: Type.String({ description: "Thread assignment and expected deliverable." }),
       fork_from: Type.Optional(Type.String({ description: "Optional Recurso thread ID to fork from instead of the current session." })),
-      context: Type.Optional(Type.String({ description: "Additional context appended to the worker instructions." })),
-      name: Type.Optional(Type.String({ description: "Optional session display name for the worker." })),
-      model: Type.Optional(Type.String({ description: "Optional Pi model pattern for the worker." })),
-      provider: Type.Optional(Type.String({ description: "Optional Pi provider name for the worker." })),
+      context: Type.Optional(Type.String({ description: "Additional context appended to the thread instructions." })),
+      name: Type.Optional(Type.String({ description: "Optional session display name for the thread." })),
+      model: Type.Optional(Type.String({ description: "Optional Pi model pattern for the thread." })),
+      provider: Type.Optional(Type.String({ description: "Optional Pi provider name for the thread." })),
       tools: Type.Optional(Type.Array(Type.String(), { description: "Optional tool allowlist. Recurso tools are added automatically." })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -849,10 +895,10 @@ export default function recurso(pi: ExtensionAPI) {
       "Use recurso_message_thread to communicate between Recurso threads.",
       "Use target parent to message the thread that spawned you.",
       "Default deliver_as is followUp. Use steer only for urgent corrections or blockers.",
-      "After sending type question or done, stop working unless the parent sends more instructions.",
+      "After sending type question or done to parent, stop working unless the spawning thread sends more instructions.",
     ],
     parameters: Type.Object({
-      target: Type.String({ description: "Target thread ID, or parent." }),
+      target: Type.String({ description: "Target thread ID, parent, or root." }),
       type: StringEnum(["question", "done", "progress"] as const),
       message: Type.String({ description: "Self-contained message." }),
       deliver_as: Type.Optional(StringEnum(["followUp", "steer"] as const)),
@@ -872,7 +918,7 @@ export default function recurso(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: result.note }],
         details: { routed: result.routed, target: parsed.target, type: parsed.type, deliverAs: parsed.deliverAs },
-        terminate: Boolean(process.env.RECURSO_PARENT_THREAD_ID) && parsed.target === "parent" && (parsed.type === "question" || parsed.type === "done"),
+        terminate: isSupervisorTarget(parsed.target) && (parsed.type === "question" || parsed.type === "done"),
       };
     },
   });
@@ -958,7 +1004,7 @@ export default function recurso(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("recurso-stop-all", {
-    description: "Terminate all live Recurso child threads",
+    description: "Terminate all live Recurso threads spawned by this manager",
     handler: async (_args, ctx) => {
       const count = manager.list().length;
       manager.shutdown();
@@ -991,6 +1037,11 @@ function numberFromEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function isSupervisorTarget(target: string): boolean {
+  const parentId = process.env.RECURSO_PARENT_THREAD_ID;
+  return Boolean(parentId) && (target === "parent" || target === parentId);
+}
+
 function newThreadId(): string {
   return `th-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -1009,6 +1060,23 @@ function clamp(value: number, min: number, max: number): number {
 
 function isDead(thread: ThreadEntry): boolean {
   return thread.rpc.killed || thread.rpc.exitCode !== null || thread.status === "exited" || thread.status === "error";
+}
+
+function isLiveThreadSnapshot(thread: { status?: string; pid?: number; exitCode?: number | null }): boolean {
+  if (!thread) return false;
+  if (thread.exitCode !== undefined && thread.exitCode !== null) return false;
+  if (thread.status === "exited" || thread.status === "error") return false;
+  if (typeof thread.pid === "number" && thread.pid > 0) return pidIsAlive(thread.pid);
+  return true;
+}
+
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    return error?.code === "EPERM";
+  }
 }
 
 function currentSessionFile(ctx: any): string | undefined {
@@ -1068,7 +1136,7 @@ function snapshotThread(thread: ThreadEntry): ThreadSnapshot {
   };
 }
 
-function buildWorkerPrompt(input: {
+function buildThreadPrompt(input: {
   id: string;
   parentId: string;
   task: string;
@@ -1078,12 +1146,12 @@ function buildWorkerPrompt(input: {
 }): string {
   const lines = [
     `You are Recurso thread ${input.id}.`,
-    `Your parent is ${input.parentId}. Use target "parent" to message it.`,
+    `The thread that spawned you is ${input.parentId}. Use target "parent" to message it, or use a concrete thread ID when you know one.`,
     `Depth: ${input.depth}/${input.maxDepth}.`,
     "",
-    "You are a worker thread, not the parent agent. Treat prior conversation as context, not as your assignment.",
+    "You are a normal Recurso agent with the same Recurso tools as other threads. Focus on the assignment below; treat prior conversation as context, not as permission to take over the whole session.",
     "",
-    "Task:",
+    "Assignment:",
     input.task,
     "",
   ];
@@ -1094,20 +1162,22 @@ function buildWorkerPrompt(input: {
 
   lines.push(
     "Communication:",
-    `- Use ${TOOL_MESSAGE} with target "parent" for questions, sparse progress, or completion.`,
+    `- Use ${TOOL_MESSAGE} with target "parent" for questions, sparse progress, or completion to the thread that spawned you.`,
+    "- Use concrete Recurso thread IDs to message known sibling or descendant threads.",
     "- Use type question only for cross-boundary decisions or blockers.",
     "- Use type done when the assignment is complete.",
-    "- After question or done, stop after the tool call.",
+    "- After question or done to your spawning thread, stop after the tool call unless you were explicitly told to keep working.",
     "- Default deliver_as followUp. Use steer only for urgent blockers.",
     "",
     "Coordination:",
     "- Work independently for local, reversible details.",
-    "- Do not make decisions that affect other threads or the parent scope.",
+    "- You may create, fork, and message Recurso threads when a bounded subtask benefits from parallel work.",
+    "- Avoid decisions that unexpectedly change another thread's scope; ask or report when coordination matters.",
     "- Keep reports concise and include files changed and checks run when relevant.",
   );
 
   if (input.depth < input.maxDepth) {
-    lines.push("", `You may use ${TOOL_FORK} or ${TOOL_NEW} for clearly independent subtasks, but keep the team small.`);
+    lines.push("", `You may use ${TOOL_FORK} or ${TOOL_NEW} for clearly independent subtasks, but keep the thread tree purposeful.`);
   }
 
   return lines.join("\n");
